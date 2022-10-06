@@ -17,7 +17,7 @@
          prepare/1
          ]).
 
--define(NIL, []).
+% -define(NIL, []).
 -include_lib("amqp10_common/include/amqp10_framing.hrl").
 
 -type str() :: atom() | string() | binary().
