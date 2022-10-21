@@ -12,7 +12,7 @@
 -export([start_link/5, successfully_recovered_state/1,
          client_init/4, client_terminate/1, client_delete_and_terminate/1,
          client_ref/1, close_all_indicated/1,
-         write/3, write_flow/3, read/2, contains/2, remove/2]).
+         write/3, write_flow/3, read/2, read_many/2, contains/2, remove/2]).
 
 -export([set_maximum_since_use/2, combine_files/3,
          delete_file/2]). %% internal
@@ -61,9 +61,14 @@
           %% current file handle since the last fsync?
           current_file_handle,
           %% file handle cache
-          file_handle_cache,
+          current_file_offset,
+          file_handle_cache, %% @todo Make that unused.
           %% TRef for our interval timer
           sync_timer_ref,
+          %% @todo sum_valid_data and sum_file_size only exist to decide
+          %%       whether compaction should occur. If we instead decide
+          %%       to compact based on what the individual file size is
+          %%       when messages get removed, we don't need these two values.
           %% sum of valid data in all files
           sum_valid_data,
           %% sum of file sizes
@@ -517,14 +522,126 @@ read(MsgId,
     %% Check the cur file cache
     case ets:lookup(CurFileCacheEts, MsgId) of
         [] ->
-            Defer = fun() -> {server_call(CState, {read, MsgId}), CState} end,
+            %% @todo It's probably a bug if we don't get a positive ref count.
             case index_lookup_positive_ref_count(MsgId, CState) of
-                not_found   -> Defer();
-                MsgLocation -> client_read1(MsgLocation, Defer, CState)
+                not_found   -> {not_found, CState};
+                MsgLocation -> client_read2(MsgLocation, CState)
             end;
         [{MsgId, Msg, _CacheRefCount}] ->
             {{ok, Msg}, CState}
     end.
+
+-spec read_many([rabbit_types:msg_id()], client_msstate()) -> [msg()].
+
+%% We disable read_many when the index module is not ETS for the time being.
+%% We can introduce the new index module callback as a breaking change in 4.0.
+read_many(_, #client_msstate{ index_module = IndexMod })
+        when IndexMod =/= rabbit_msg_store_ets_index ->
+    [];
+read_many(MsgIds, CState) ->
+    file_handle_cache_stats:inc(msg_store_read, length(MsgIds)),
+    %% We receive MsgIds in rouhgly the younger->older order so
+    %% we can look for messages in the cache directly.
+    read_many_cache(MsgIds, CState, #{}).
+
+%% We read from the cache until we can't. Then we read from disk.
+read_many_cache([MsgId|Tail], CState = #client_msstate{ cur_file_cache_ets = CurFileCacheEts }, Acc) ->
+    case ets:lookup(CurFileCacheEts, MsgId) of
+        [] ->
+            read_many_disk([MsgId|Tail], CState, Acc);
+        [{MsgId, Msg, _CacheRefCount}] ->
+            read_many_cache(Tail, CState, Acc#{MsgId => Msg})
+    end;
+read_many_cache([], _CState, Acc) ->
+    Acc.
+
+%% We will read from disk one file at a time in no particular order.
+read_many_disk([MsgId|Tail], CState, Acc) ->
+    case index_lookup_positive_ref_count(MsgId, CState) of
+        %% We ignore this message if it's not found and will try
+        %% to read it individually later instead. We can't call
+        %% the message store and expect good performance here.
+        %% @todo Can this even happen? Isn't this a bug?
+        not_found   -> read_many_disk(Tail, CState, Acc);
+        MsgLocation -> read_many_file1([MsgId|Tail], CState, Acc, MsgLocation#msg_location.file)
+    end;
+read_many_disk([], _CState, Acc) ->
+    Acc.
+
+%% First we mark ourselves as a reader.
+read_many_file1(MsgIds, CState = #client_msstate{ file_summary_ets = FileSummaryEts }, Acc, File) ->
+    safe_ets_update_counter(
+      FileSummaryEts, File, {#file_summary.readers, +1},
+      fun (_) -> read_many_file2(MsgIds, CState, Acc, File) end,
+      %% If this fails we just retry since it means the file got compacted.
+      fun () -> read_many_disk(MsgIds, CState, Acc) end).
+
+%% Then we mark the file handle as being open.
+read_many_file2(MsgIds0, CState = #client_msstate{ dir              = Dir,
+                                                   file_handles_ets = FileHandlesEts,
+                                                   client_ref       = Ref }, Acc0, File) ->
+    %% Mark file handle open.
+    mark_handle_open(FileHandlesEts, File, Ref),
+    %% Get index for all Msgids in File.
+    %% It's possible that we get no results here if compaction
+    %% was in progress. That's OK: we will try again with those
+    %% MsgIds to get them from the new file.
+    MsgLocations0 = index_select_from_file(MsgIds0, CState, File),
+    case MsgLocations0 of
+        [] ->
+            read_many_file3(MsgIds0, CState, Acc0, File);
+        _ ->
+            %% At this point either the file is guaranteed to remain
+            %% for us to read from it or we got zero locations.
+            %%
+            %% First we must order the locations so that we can consolidate
+            %% the preads and improve read performance.
+            MsgLocations = lists:keysort(#msg_location.offset, MsgLocations0),
+            %% Then we can do the consolidation to get the pread LocNums.
+            LocNums = consolidate_reads(MsgLocations, []),
+            %% Read the data from the file.
+            {ok, Fd} = file:open(form_filename(Dir, filenum_to_name(File)), [binary, read]),
+            {ok, Msgs} = rabbit_msg_file:pread(Fd, LocNums),
+            ok = file:close(Fd),
+            %% Before we continue the read_many calls we must remove the
+            %% MsgIds we have read from the list and add the messages to
+            %% the Acc.
+            {Acc, MsgIdsRead} = lists:foldl(fun(Msg = #basic_message{id = MsgIdRead}, {Acc1, MsgIdsAcc}) ->
+                {Acc1#{MsgIdRead => Msg}, [MsgIdRead|MsgIdsAcc]}
+            end, {Acc0, []}, Msgs),
+            MsgIds = MsgIds0 -- MsgIdsRead,
+            %% Unmark opened files and continue.
+            read_many_file3(MsgIds, CState, Acc, File)
+    end.
+
+index_select_from_file(MsgIds, #client_msstate { index_module = Index,
+                                                 index_state  = State }, File) ->
+    Index:select_from_file(MsgIds, File, State).
+
+consolidate_reads([#msg_location{offset=NextOffset, total_size=NextSize}|Locs], [{Offset, Size}|Acc])
+        when Offset + Size =:= NextOffset ->
+    consolidate_reads(Locs, [{Offset, Size + NextSize}|Acc]);
+consolidate_reads([#msg_location{offset=NextOffset, total_size=NextSize}|Locs], Acc) ->
+    consolidate_reads(Locs, [{NextOffset, NextSize}|Acc]);
+consolidate_reads([], Acc) ->
+    lists:reverse(Acc).
+
+%% Cleanup opened files and continue.
+read_many_file3(MsgIds, CState = #client_msstate{ file_handles_ets = FileHandlesEts,
+                                                  file_summary_ets = FileSummaryEts,
+                                                  gc_pid           = GCPid,
+                                                  client_ref       = Ref }, Acc, File) ->
+    mark_handle_closed(FileHandlesEts, File, Ref),
+    ok = case ets:update_counter(FileSummaryEts, File, {#file_summary.readers, -1}) of
+        0 ->
+            case ets:lookup(FileSummaryEts, File) of
+                [#file_summary { locked = true }] ->
+                rabbit_msg_store_gc:no_readers(GCPid, File);
+                _ -> ok
+            end;
+        _ -> ok
+    end,
+    read_many_disk(MsgIds, CState, Acc).
 
 -spec contains(rabbit_types:msg_id(), client_msstate()) -> boolean().
 
@@ -560,48 +677,37 @@ client_write(MsgId, Msg, Flow,
     ok = update_msg_cache(CurFileCacheEts, MsgId, Msg),
     ok = server_cast(CState, {write, CRef, MsgId, Flow}).
 
-client_read1(#msg_location { msg_id = MsgId, file = File } = MsgLocation, Defer,
-             CState = #client_msstate { file_summary_ets = FileSummaryEts }) ->
-    case ets:lookup(FileSummaryEts, File) of
-        [] -> %% File has been GC'd and no longer exists. Go around again.
-            read(MsgId, CState);
-        [#file_summary { locked = Locked, right = Right }] ->
-            client_read2(Locked, Right, MsgLocation, Defer, CState)
-    end.
-
-client_read2(false, undefined, _MsgLocation, Defer, _CState) ->
-    %% Although we've already checked both caches and not found the
-    %% message there, the message is apparently in the
-    %% current_file. We can only arrive here if we are trying to read
-    %% a message which we have not written, which is very odd, so just
-    %% defer.
-    %%
-    %% OR, on startup, the cur_file_cache is not populated with the
-    %% contents of the current file, thus reads from the current file
-    %% will end up here and will need to be deferred.
-    Defer();
-client_read2(true, _Right, _MsgLocation, Defer, _CState) ->
-    %% Of course, in the mean time, the GC could have run and our msg
-    %% is actually in a different file, unlocked. However, deferring is
-    %% the safest and simplest thing to do.
-    Defer();
-client_read2(false, _Right,
-             MsgLocation = #msg_location { msg_id = MsgId, file = File },
-             Defer,
+%% We no longer check for whether the message's file is locked because we
+%% rely on the fact that the file gets removed only when there are no
+%% readers. So we mark the file as being opened and then check that
+%% the message data is within this file and if that's the case then
+%% we are guaranteed able to read from it until we release the file
+%% handle. This is because the compaction has been reworked to copy
+%% the data before changing the index information, therefore if the
+%% index information points to the file we are expecting we are good.
+%% And the file only gets deleted after all data was copied, index
+%% was updated and file handles got closed.
+client_read2(MsgLocation = #msg_location { msg_id = MsgId, file = File },
              CState = #client_msstate { file_summary_ets = FileSummaryEts }) ->
     %% It's entirely possible that everything we're doing from here on
     %% is for the wrong file, or a non-existent file, as a GC may have
     %% finished.
+    %% @todo This shouldn't fail anymore since files don't get deleted if not uncurrent+empty. We still need to update_counter though.
     safe_ets_update_counter(
       FileSummaryEts, File, {#file_summary.readers, +1},
-      fun (_) -> client_read3(MsgLocation, Defer, CState) end,
+      fun (_) -> client_read3(MsgLocation, CState) end,
       fun () -> read(MsgId, CState) end).
 
-client_read3(#msg_location { msg_id = MsgId, file = File }, Defer,
+client_read3(#msg_location { msg_id = MsgId, file = File },
              CState = #client_msstate { file_handles_ets = FileHandlesEts,
                                         file_summary_ets = FileSummaryEts,
                                         gc_pid           = GCPid,
                                         client_ref       = Ref }) ->
+    %% We immediately mark the handle open so that we don't get the
+    %% file deleted while we are reading from it. The file may
+    %% still be deleted past that point but that's OK because we
+    %% will do a second index lookup to ensure that it isn't.
+    mark_handle_open(FileHandlesEts, File, Ref),
     Release =
         fun() -> ok = case ets:update_counter(FileSummaryEts, File,
                                               {#file_summary.readers, -1}) of
@@ -614,61 +720,21 @@ client_read3(#msg_location { msg_id = MsgId, file = File }, Defer,
                           _ -> ok
                       end
         end,
-    %% If a GC involving the file hasn't already started, it won't
-    %% start now. Need to check again to see if we've been locked in
-    %% the meantime, between lookup and update_counter (thus GC
-    %% started before our +1. In fact, it could have finished by now
-    %% too).
-    case ets:lookup(FileSummaryEts, File) of
-        [] -> %% GC has deleted our file, just go round again.
-            read(MsgId, CState);
-        [#file_summary { locked = true }] ->
-            %% If we get a badarg here, then the GC has finished and
-            %% deleted our file. Try going around again. Otherwise,
-            %% just defer.
-            %%
-            %% badarg scenario: we lookup, msg_store locks, GC starts,
-            %% GC ends, we +1 readers, msg_store ets:deletes (and
-            %% unlocks the dest)
-            try Release(),
-                 Defer()
-            catch error:badarg -> read(MsgId, CState)
-            end;
-        [#file_summary { locked = false }] ->
-            %% Ok, we're definitely safe to continue - a GC involving
-            %% the file cannot start up now, and isn't running, so
-            %% nothing will tell us from now on to close the handle if
-            %% it's already open.
-            %%
-            %% Finally, we need to recheck that the msg is still at
-            %% the same place - it's possible an entire GC ran between
-            %% us doing the lookup and the +1 on the readers. (Same as
-            %% badarg scenario above, but we don't have a missing file
-            %% - we just have the /wrong/ file).
-            case index_lookup(MsgId, CState) of
-                #msg_location { file = File } = MsgLocation ->
-                    %% Still the same file.
-                    {ok, CState1} = close_all_indicated(CState),
-                    %% We are now guaranteed that the mark_handle_open
-                    %% call will either insert_new correctly, or will
-                    %% fail, but find the value is open, not close.
-                    mark_handle_open(FileHandlesEts, File, Ref),
-                    %% Could the msg_store now mark the file to be
-                    %% closed? No: marks for closing are issued only
-                    %% when the msg_store has locked the file.
-                    %% This will never be the current file
-                    {Msg, CState2} = read_from_disk(MsgLocation, CState1),
-                    Release(), %% this MUST NOT fail with badarg
-                    {{ok, Msg}, CState2};
-                #msg_location {} = MsgLocation -> %% different file!
-                    Release(), %% this MUST NOT fail with badarg
-                    client_read1(MsgLocation, Defer, CState);
-                not_found -> %% it seems not to exist. Defer, just to be sure.
-                    try Release() %% this can badarg, same as locked case, above
-                    catch error:badarg -> ok
-                    end,
-                    Defer()
-            end
+    case index_lookup(MsgId, CState) of
+        #msg_location { file = File, ref_count = RefCount } = MsgLocation when RefCount > 0 ->
+            %% Still the same file.
+            {ok, CState1} = close_all_indicated(CState),
+            %% Could the msg_store now mark the file to be
+            %% closed? No: marks for closing are issued only
+            %% when the msg_store has locked the file.
+            %% This will never be the current file
+            {Msg, CState2} = read_from_disk(MsgLocation, CState1),
+            Release(), %% this MUST NOT fail with badarg
+            {{ok, Msg}, CState2};
+        #msg_location { file = MsgFile } = MsgLocation when MsgFile =/= File -> %% different file!
+            mark_handle_closed(FileHandlesEts, File, Ref),
+            Release(), %% this MUST NOT fail with badarg
+            client_read2(MsgLocation, CState)
     end.
 
 client_update_flying(Diff, MsgId, #client_msstate { flying_ets = FlyingEts,
@@ -777,6 +843,7 @@ init([VHost, Type, BaseDir, ClientRefs, StartupFunState]) ->
                        current_file           = 0,
                        current_file_handle    = undefined,
                        file_handle_cache      = #{},
+                       current_file_offset    = 0,
                        sync_timer_ref         = undefined,
                        sum_valid_data         = 0,
                        sum_file_size          = 0,
@@ -801,16 +868,17 @@ init([VHost, Type, BaseDir, ClientRefs, StartupFunState]) ->
                   end,
     rabbit_log:debug("Rebuilding message location index after ~ts shutdown...",
                      [Cleanliness]),
-    {Offset, State1 = #msstate { current_file = CurFile }} =
+    {CurOffset, State1 = #msstate { current_file = CurFile }} =
         build_index(CleanShutdown, StartupFunState, State),
     rabbit_log:debug("Finished rebuilding index", []),
     %% read is only needed so that we can seek
     {ok, CurHdl} = open_file(Dir, filenum_to_name(CurFile),
                              [read | ?WRITE_MODE]),
-    {ok, Offset} = file_handle_cache:position(CurHdl, Offset),
+    {ok, CurOffset} = file_handle_cache:position(CurHdl, CurOffset),
     ok = file_handle_cache:truncate(CurHdl),
 
-    {ok, maybe_compact(State1 #msstate { current_file_handle = CurHdl }),
+    {ok, maybe_compact(State1 #msstate { current_file_handle = CurHdl,
+                                         current_file_offset = CurOffset }),
      hibernate,
      {backoff, ?HIBERNATE_AFTER_MIN, ?HIBERNATE_AFTER_MIN, ?DESIRED_HIBERNATE}}.
 
@@ -818,7 +886,6 @@ prioritise_call(Msg, _From, _Len, _State) ->
     case Msg of
         successfully_recovered_state                        -> 7;
         {new_client_state, _Ref, _Pid, _MODC, _CloseFDsFun} -> 7;
-        {read, _MsgId}                                      -> 2;
         _                                                   -> 0
     end.
 
@@ -859,19 +926,14 @@ handle_call({new_client_state, CRef, CPid, MsgOnDiskFun, CloseFDsFun}, _From,
 handle_call({client_terminate, CRef}, _From, State) ->
     reply(ok, clear_client(CRef, State));
 
-handle_call({read, MsgId}, From, State) ->
-    State1 = read_message(MsgId, From, State),
-    noreply(State1);
-
 handle_call({contains, MsgId}, From, State) ->
     State1 = contains_message(MsgId, From, State),
     noreply(State1).
 
 handle_cast({client_dying, CRef},
             State = #msstate { dying_clients       = DyingClients,
-                               current_file_handle = CurHdl,
-                               current_file        = CurFile }) ->
-    {ok, CurOffset} = file_handle_cache:current_virtual_offset(CurHdl),
+                               current_file        = CurFile,
+                               current_file_offset = CurOffset }) ->
     DyingClients1 = maps:put(CRef,
                              #dying_client{client_ref = CRef,
                                            file = CurFile,
@@ -1027,7 +1089,8 @@ terminate(_Reason, State = #msstate { index_state         = IndexState,
                              [Dir, RTErr])
     end,
     State3 #msstate { index_state         = undefined,
-                      current_file_handle = undefined }.
+                      current_file_handle = undefined,
+                      current_file_offset = 0 }.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1164,6 +1227,13 @@ write_message(MsgId, Msg, CRef,
               end, CRef, State1)
     end.
 
+%% @todo We should essentially maybe_compact only following this function
+%%       or immediately after init. In the case of init when starting we
+%%       would look at all files and compared valid/total to know whether
+%%       it is worth compacting. In the case of remove_message we would
+%%       mark the file as being compactable in the state and only call
+%%       maybe_compact if the newly compactable file is a neighbor to
+%%       another compactable file.
 remove_message(MsgId, CRef,
                State = #msstate { file_summary_ets = FileSummaryEts }) ->
     case should_mask_action(CRef, MsgId, State) of
@@ -1205,10 +1275,10 @@ remove_message(MsgId, CRef,
 write_message(MsgId, Msg,
               State = #msstate { current_file_handle = CurHdl,
                                  current_file        = CurFile,
+                                 current_file_offset = CurOffset,
                                  sum_valid_data      = SumValid,
                                  sum_file_size       = SumFileSize,
                                  file_summary_ets    = FileSummaryEts }) ->
-    {ok, CurOffset} = file_handle_cache:current_virtual_offset(CurHdl),
     {ok, TotalSize} = rabbit_msg_file:append(CurHdl, MsgId, Msg),
     ok = index_insert(
            #msg_location { msg_id = MsgId, ref_count = 1, file = CurFile,
@@ -1220,56 +1290,16 @@ write_message(MsgId, Msg,
                                 {#file_summary.file_size,        TotalSize}]),
     maybe_roll_to_new_file(CurOffset + TotalSize,
                            State #msstate {
+                             current_file_offset = CurOffset + TotalSize,
                              sum_valid_data = SumValid    + TotalSize,
                              sum_file_size  = SumFileSize + TotalSize }).
 
-read_message(MsgId, From, State) ->
-    case index_lookup_positive_ref_count(MsgId, State) of
-        not_found   -> gen_server2:reply(From, not_found),
-                       State;
-        MsgLocation -> read_message1(From, MsgLocation, State)
-    end.
-
-read_message1(From, #msg_location { msg_id = MsgId, file = File,
-                                    offset = Offset } = MsgLoc,
-              State = #msstate { current_file        = CurFile,
-                                 current_file_handle = CurHdl,
-                                 file_summary_ets    = FileSummaryEts,
-                                 cur_file_cache_ets  = CurFileCacheEts }) ->
-    case File =:= CurFile of
-        true  -> {Msg, State1} =
-                     %% can return [] if msg in file existed on startup
-                     case ets:lookup(CurFileCacheEts, MsgId) of
-                         [] ->
-                             {ok, RawOffSet} =
-                                 file_handle_cache:current_raw_offset(CurHdl),
-                             ok = case Offset >= RawOffSet of
-                                      true  -> file_handle_cache:flush(CurHdl);
-                                      false -> ok
-                                  end,
-                             read_from_disk(MsgLoc, State);
-                         [{MsgId, Msg1, _CacheRefCount}] ->
-                             {Msg1, State}
-                     end,
-                 gen_server2:reply(From, {ok, Msg}),
-                 State1;
-        false -> [#file_summary { locked = Locked }] =
-                     ets:lookup(FileSummaryEts, File),
-                 case Locked of
-                     true  -> add_to_pending_gc_completion({read, MsgId, From},
-                                                           File, State);
-                     false -> {Msg, State1} = read_from_disk(MsgLoc, State),
-                              gen_server2:reply(From, {ok, Msg}),
-                              State1
-                 end
-    end.
-
 read_from_disk(#msg_location { msg_id = MsgId, file = File, offset = Offset,
-                               total_size = TotalSize }, State) ->
-    {Hdl, State1} = get_read_handle(File, State),
-    {ok, Offset} = file_handle_cache:position(Hdl, Offset),
+                               total_size = TotalSize }, State = #client_msstate{ dir = Dir }) ->
+    {ok, Hdl} = file:open(form_filename(Dir, filenum_to_name(File)),
+                          [binary, read]),
     {ok, {MsgId, Msg}} =
-        case rabbit_msg_file:read(Hdl, TotalSize) of
+        case rabbit_msg_file:pread(Hdl, Offset, TotalSize) of
             {ok, {MsgId, _}} = Obj ->
                 Obj;
             Rest ->
@@ -1281,7 +1311,8 @@ read_from_disk(#msg_location { msg_id = MsgId, file = File, offset = Offset,
                                    {proc_dict, get()}
                                   ]}}
         end,
-    {Msg, State1}.
+    ok = file:close(Hdl),
+    {Msg, State}.
 
 contains_message(MsgId, From,
                  State = #msstate { pending_gc_completion = Pending }) ->
@@ -1313,8 +1344,6 @@ run_pending(Files, State) ->
                 lists:reverse(maps:get(File, Pending)))
       end, State, Files).
 
-run_pending_action({read, MsgId, From}, State) ->
-    read_message(MsgId, From, State);
 run_pending_action({contains, MsgId, From}, State) ->
     contains_message(MsgId, From, State);
 run_pending_action({remove, MsgId, CRef}, State) ->
@@ -1437,8 +1466,12 @@ close_handle(Key, FHC) ->
 mark_handle_open(FileHandlesEts, File, Ref) ->
     %% This is fine to fail (already exists). Note it could fail with
     %% the value being close, and not have it updated to open.
+    %% @todo Should it fail? Probably not anymore.
     ets:insert_new(FileHandlesEts, {{Ref, File}, open}),
     true.
+
+mark_handle_closed(FileHandlesEts, File, Ref) ->
+    ets:delete(FileHandlesEts, {Ref, File}).
 
 %% See comment in client_read3 - only call this when the file is locked
 mark_handle_to_close(ClientRefs, FileHandlesEts, File, Invoke) ->
@@ -1495,24 +1528,6 @@ close_all_handles(State = #msstate { file_handle_cache = FHC }) ->
     ok = maps:fold(fun (_Key, Hdl, ok) -> file_handle_cache:close(Hdl) end,
                    ok, FHC),
     State #msstate { file_handle_cache = #{} }.
-
-get_read_handle(FileNum, CState = #client_msstate { file_handle_cache = FHC,
-                                                    dir = Dir }) ->
-    {Hdl, FHC2} = get_read_handle(FileNum, FHC, Dir),
-    {Hdl, CState #client_msstate { file_handle_cache = FHC2 }};
-
-get_read_handle(FileNum, State = #msstate { file_handle_cache = FHC,
-                                            dir = Dir }) ->
-    {Hdl, FHC2} = get_read_handle(FileNum, FHC, Dir),
-    {Hdl, State #msstate { file_handle_cache = FHC2 }}.
-
-get_read_handle(FileNum, FHC, Dir) ->
-    case maps:find(FileNum, FHC) of
-        {ok, Hdl} -> {Hdl, FHC};
-        error     -> {ok, Hdl} = open_file(Dir, filenum_to_name(FileNum),
-                                           ?READ_MODE),
-                     {Hdl, maps:put(FileNum, Hdl, FHC)}
-    end.
 
 preallocate(Hdl, FileSizeLimit, FinalPos) ->
     {ok, FileSizeLimit} = file_handle_cache:position(Hdl, FileSizeLimit),
@@ -1877,7 +1892,7 @@ maybe_roll_to_new_file(
                      file_size_limit     = FileSizeLimit })
   when Offset >= FileSizeLimit ->
     State1 = internal_sync(State),
-    ok = file_handle_cache:close(CurHdl),
+    file_handle_cache:close(CurHdl),
     NextFile = CurFile + 1,
     {ok, NextHdl} = open_file(Dir, filenum_to_name(NextFile), ?WRITE_MODE),
     true = ets:insert_new(FileSummaryEts, #file_summary {
@@ -1891,8 +1906,9 @@ maybe_roll_to_new_file(
     true = ets:update_element(FileSummaryEts, CurFile,
                               {#file_summary.right, NextFile}),
     true = ets:match_delete(CurFileCacheEts, {'_', '_', 0}),
-    maybe_compact(State1 #msstate { current_file_handle = NextHdl,
-                                    current_file        = NextFile });
+    State1 #msstate { current_file_handle = NextHdl,
+                      current_file        = NextFile,
+                      current_file_offset = 0 };
 maybe_roll_to_new_file(_, State) ->
     State.
 
@@ -2169,37 +2185,50 @@ copy_messages(WorkList, InitOffset, FinalOffset, SourceHdl, DestinationHdl,
         lists:foldl(
           fun (#msg_location { msg_id = MsgId, offset = Offset,
                                total_size = TotalSize },
-               {CurOffset, Block = {BlockStart, BlockEnd}}) ->
+               {CurOffset, Block = {BlockStart, BlockEnd}, Acc0}) ->
                   %% CurOffset is in the DestinationFile.
                   %% Offset, BlockStart and BlockEnd are in the SourceFile
                   %% update MsgLocation to reflect change of file and offset
-                  ok = index_update_fields(MsgId,
-                                           [{#msg_location.file, Destination},
-                                            {#msg_location.offset, CurOffset}],
-                                           State),
-                  {CurOffset + TotalSize,
-                   case BlockEnd of
-                       undefined ->
-                           %% base case, called only for the first list elem
-                           {Offset, Offset + TotalSize};
-                       Offset ->
-                           %% extend the current block because the
-                           %% next msg follows straight on
-                           {BlockStart, BlockEnd + TotalSize};
-                       _ ->
-                           %% found a gap, so actually do the work for
-                           %% the previous block
-                           Copy(Block),
-                           {Offset, Offset + TotalSize}
-                   end}
-          end, {InitOffset, {undefined, undefined}}, WorkList) of
-        {FinalOffset, Block} ->
+                  %%
+                  %% We update the index after the copy has completed because
+                  %% we want to guarantee that reads, and especially multi-reads,
+                  %% can happen as long as possible even while compaction is
+                  %% happening.
+                  Acc = [{MsgId, CurOffset}|Acc0],
+                  NewOffset = CurOffset + TotalSize,
+                  case BlockEnd of
+                      undefined ->
+                          %% base case, called only for the first list elem
+                          {NewOffset, {Offset, Offset + TotalSize}, Acc};
+                      Offset ->
+                          %% extend the current block because the
+                          %% next msg follows straight on
+                          {NewOffset, {BlockStart, BlockEnd + TotalSize}, Acc};
+                      _ ->
+                          %% found a gap, so actually do the work for
+                          %% the previous block
+                          Copy(Block),
+                          %% Update the index for all the messages we just copied.
+                          [ok = index_update_fields(UpdateMsgId,
+                                                    [{#msg_location.file, Destination},
+                                                     {#msg_location.offset, UpdateOffset}],
+                                                    State)
+                          || {UpdateMsgId, UpdateOffset} <- Acc],
+                          {NewOffset, {Offset, Offset + TotalSize}, []}
+                  end
+          end, {InitOffset, {undefined, undefined}, []}, WorkList) of
+        {FinalOffset, Block, Acc} ->
             case WorkList of
                 [] -> ok;
                 _  -> Copy(Block), %% do the last remaining block
+                      [ok = index_update_fields(UpdateMsgId,
+                                                [{#msg_location.file, Destination},
+                                                 {#msg_location.offset, UpdateOffset}],
+                                                State)
+                      || {UpdateMsgId, UpdateOffset} <- Acc],
                       ok = file_handle_cache:sync(DestinationHdl)
             end;
-        {FinalOffsetZ, _Block} ->
+        {FinalOffsetZ, _Block, _Acc} ->
             {gc_error, [{expected, FinalOffset},
                         {got, FinalOffsetZ},
                         {destination, Destination}]}
