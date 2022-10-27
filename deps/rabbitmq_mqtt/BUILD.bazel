@@ -100,6 +100,16 @@ rabbitmq_test_helper(
     ],
 )
 
+rabbitmq_test_helper(
+    name = "event_recorder",
+    srcs = [
+        "test/event_recorder.erl",
+    ],
+    deps = [
+        "//deps/rabbit_common:erlang_app",
+    ],
+)
+
 PACKAGE = "deps/rabbitmq_mqtt"
 
 suites = [
@@ -190,6 +200,16 @@ suites = [
         ],
         additional_beam = [
             ":util",
+        ],
+    ),
+    rabbitmq_integration_suite(
+        PACKAGE,
+        name = "integration_SUITE",
+        runtime_deps = [
+            "@emqtt//:erlang_app",
+        ],
+        additional_beam = [
+            ":event_recorder",
         ],
     ),
 ]
