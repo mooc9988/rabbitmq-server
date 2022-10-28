@@ -205,11 +205,13 @@ suites = [
     rabbitmq_integration_suite(
         PACKAGE,
         name = "integration_SUITE",
+        size = "large",
         runtime_deps = [
             "@emqtt//:erlang_app",
         ],
         additional_beam = [
             ":event_recorder",
+            ":util",
         ],
     ),
 ]
