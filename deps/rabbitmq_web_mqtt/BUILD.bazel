@@ -71,7 +71,6 @@ PACKAGE = "deps/rabbitmq_web_mqtt"
 rabbitmq_test_helper(
     name = "test_utils",
     srcs = glob(["test/src/*.erl"]),
-    hdrs = glob(["test/src/*.hrl"]),
 )
 
 suites = [
@@ -83,7 +82,6 @@ suites = [
         PACKAGE,
         name = "proxy_protocol_SUITE",
         additional_beam = [":test_utils"],
-        additional_hdrs = glob(["test/src/*.hrl"]),
         erlc_opts = [
             "-I",
             "deps/rabbitmq_web_mqtt/test",
@@ -93,7 +91,6 @@ suites = [
         PACKAGE,
         name = "system_SUITE",
         additional_beam = [":test_utils"],
-        additional_hdrs = glob(["test/src/*.hrl"]),
         runtime_deps = [
             "@emqtt//:erlang_app",
             "@gun//:erlang_app",
