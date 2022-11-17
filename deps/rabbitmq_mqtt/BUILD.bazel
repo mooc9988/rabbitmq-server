@@ -187,6 +187,9 @@ suites = [
         runtime_deps = [
             "@emqtt//:erlang_app",
         ],
+        additional_beam = [
+            ":util",
+        ],
     ),
     rabbitmq_suite(
         name = "util_SUITE",
