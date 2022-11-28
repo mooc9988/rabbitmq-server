@@ -3,7 +3,7 @@
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
 %% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
-%%
 
-%% Packet identifier is a non zero two byte integer.
--type packet_id() :: 1..16#ffff.
+%% does not include vhost because vhost is used in the (D)ETS table name
+-record(retained_message, {topic,
+                           mqtt_msg}).
