@@ -155,6 +155,11 @@ suites = [
     ),
     rabbitmq_integration_suite(
         PACKAGE,
+        name = "config_SUITE",
+        size = "small",
+    ),
+    rabbitmq_integration_suite(
+        PACKAGE,
         name = "java_SUITE",
         flaky = True,
     ),
