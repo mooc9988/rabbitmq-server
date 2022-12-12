@@ -41,9 +41,6 @@
 %% Routing. These functions are in the hot code path
 -export([match_bindings/2, match_routing_key/3]).
 
--export([add_topic_trie_binding/4, delete_topic_trie_bindings_for_exchange/1,
-         delete_topic_trie_bindings/1, route_delivery_for_exchange_type_topic/2]).
-
 %% TODO maybe refactor after queues are migrated.
 -export([store_durable_queue/1]).
 
@@ -58,16 +55,14 @@
 
 -export([init/0, sync/0]).
 -export([set_migration_flag/1, is_migration_done/1]).
--export([retry/1]).
+%% Exported to be used by various rabbit_db_* modules
+-export([
+         retry/1,
+         if_has_data_wildcard/0,
+         match_source_and_destination_in_khepri_tx/2
+        ]).
 
 -define(WAIT_SECONDS, 30).
-
--define(HASH, <<"#">>).
--define(STAR, <<"*">>).
--define(DOT, <<"\\.">>).
--define(ONE_WORD, <<"[^.]+">>).
--define(ANYTHING, <<".*">>).
--define(ZERO_OR_MORE, <<"(\\..+)?">>).
 
 %% Clustering used on the boot steps
 
@@ -157,13 +152,6 @@ khepri_queues_path() ->
 
 khepri_queue_path(#resource{virtual_host = VHost, name = Name}) ->
     [?MODULE, queues, VHost, Name].
-
-
-khepri_exchange_type_topic_path(#resource{virtual_host = VHost, name = Name}) ->
-    [?MODULE, topic_trie_binding, VHost, Name].
-
-khepri_exchange_type_topic_path() ->
-    [?MODULE, topic_trie_binding].
 
 %% API
 %% --------------------------------------------------------------
@@ -1018,127 +1006,6 @@ destinations(SrcName, RoutingKey) ->
             []
     end.
 
-%% Exchange type topic
-add_topic_trie_binding(XName, RoutingKey, Destination, Args) ->
-    Path = khepri_exchange_type_topic_path(XName) ++ split_topic_trie_key(RoutingKey),
-    {Path0, [Last]} = lists:split(length(Path) - 1, Path),
-    Binding = #{destination => Destination, arguments => Args},
-    retry(
-      fun() ->
-              case rabbit_khepri:adv_get(Path) of
-                  {ok, #{data := Set0, payload_version := Vsn}} ->
-                      Set = sets:add_element(Binding, Set0),
-                      Conditions = #if_all{conditions = [Last, #if_payload_version{version = Vsn}]},
-                      UpdatePath = Path0 ++ [Conditions],
-                      rabbit_khepri:put(UpdatePath, Set);
-                  _ ->
-                      Set = sets:add_element(Binding, sets:new()),
-                      rabbit_khepri:put(Path, Set)
-              end
-      end).
-
-add_topic_trie_binding_tx(XName, RoutingKey, Destination, Args) ->
-    Path = khepri_exchange_type_topic_path(XName) ++ split_topic_trie_key(RoutingKey),
-    Binding = #{destination => Destination, arguments => Args},
-    Set0 = case khepri_tx:get(Path) of
-               {ok, undefined} -> sets:new();
-               {ok, S} -> S;
-               _ -> sets:new()
-           end,
-    Set = sets:add_element(Binding, Set0),
-    ok = khepri_tx:put(Path, Set).
-
-route_delivery_for_exchange_type_topic(XName, RoutingKey) ->
-    Root = khepri_exchange_type_topic_path(XName) ++ [if_has_data_wildcard()],
-    case rabbit_khepri:fold(
-           Root,
-           fun(Path0, #{data := Set}, Acc) ->
-                   Path = lists:nthtail(4, Path0),
-                   case is_re_topic_match(Path, RoutingKey) of
-                       true ->
-                           Bindings = sets:to_list(Set),
-                           [maps:get(destination, B) || B <- Bindings] ++ Acc;
-                       false ->
-                           Acc
-                   end
-           end,
-           []) of
-        {ok, List} -> List;
-        _ -> []
-    end.
-
-is_re_topic_match([?HASH], _) ->
-    true;
-is_re_topic_match(A, A) ->
-    true;
-is_re_topic_match([], <<>>) ->
-    true;
-is_re_topic_match([], _) ->
-    false;
-is_re_topic_match(Path00, RoutingKey) ->
-    Path0 = path_to_re(Path00),
-    Path = << <<B/binary >> || B <- Path0 >>,
-    case Path of
-        ?ANYTHING -> true;
-        _ ->
-            RE = <<$^,Path/binary,$$>>,
-            case re:run(RoutingKey, RE, [{capture, none}]) of
-                nomatch -> false;
-                _ -> true
-            end
-    end.
-
-path_to_re([?STAR | Rest]) ->
-    path_to_re(Rest, [?ONE_WORD]);
-path_to_re([?HASH | Rest]) ->
-    path_to_re(Rest, [?ANYTHING]);
-path_to_re([Bin | Rest]) ->
-    path_to_re(Rest, [Bin]).
-
-path_to_re([], Acc) ->
-    lists:reverse(Acc);
-path_to_re([?STAR | Rest], [?ANYTHING | _] = Acc) ->
-    path_to_re(Rest, [?ONE_WORD | Acc]);
-path_to_re([?STAR | Rest], Acc) ->
-    path_to_re(Rest, [?ONE_WORD, ?DOT | Acc]);
-path_to_re([?HASH | Rest], [?HASH | _] = Acc) ->
-    path_to_re(Rest, Acc);
-path_to_re([?HASH | Rest], [?ANYTHING | _] = Acc) ->
-    path_to_re(Rest, Acc);
-path_to_re([?HASH | Rest], Acc) ->
-    path_to_re(Rest, [?ZERO_OR_MORE | Acc]);
-path_to_re([Bin | Rest], [?ANYTHING | _] = Acc) ->
-    path_to_re(Rest, [Bin | Acc]);
-path_to_re([Bin | Rest], Acc) ->
-    path_to_re(Rest, [Bin, ?DOT | Acc]).
-
-delete_topic_trie_bindings_for_exchange(XName) ->
-    ok = rabbit_khepri:delete(khepri_exchange_type_topic_path(XName)).
-
-delete_topic_trie_bindings(Bs) ->
-    %% Let's handle bindings data outside of the transaction for efficiency
-    Data = [begin
-                Path = khepri_exchange_type_topic_path(X) ++ split_topic_trie_key(K),
-                {Path, #{destination => D, arguments => Args}}
-            end || #binding{source = X, key = K, destination = D, args = Args} <- Bs],
-    rabbit_khepri:transaction(
-      fun() ->
-              [begin
-                   case khepri_tx:get(Path) of
-                       {ok, undefined} ->
-                           ok;
-                       {ok, Set0} ->
-                           Set = sets:del_element(Binding, Set0),
-                           case sets:size(Set) of
-                               0 -> khepri_tx:clear_payload(Path);
-                               _ -> khepri_tx:put(Path, Set)
-                           end;
-                       _ ->
-                           ok
-                   end
-               end || {Path, Binding} <- Data]
-      end, rw),
-    ok.
 
 %% Policies
 %% --------------------------------------------------------------
@@ -1263,50 +1130,7 @@ mnesia_write_to_khepri(rabbit_durable_route, _)->
 mnesia_write_to_khepri(rabbit_semi_durable_route, _)->
     ok;
 mnesia_write_to_khepri(rabbit_reverse_route, _) ->
-    ok;
-mnesia_write_to_khepri(rabbit_topic_trie_binding, TrieBindings0) ->
-    %% There isn't enough information to rebuild the tree as the routing key is split
-    %% along the trie tree on mnesia. But, we can query the bindings table (migrated
-    %% previosly) and migrate the entries that match this <X, D> combo.
-    %% Multiple bindings to the same exchange/destination combo need to be migrated only once.
-    %% Remove here the duplicates and use a temporary ets table to keep track of those already
-    %% migrated to really speed up things.
-    Table = ensure_topic_migration_ets(),
-    TrieBindings1 =
-        lists:uniq([{X, D} || #topic_trie_binding{trie_binding = #trie_binding{exchange_name = X,
-                                                                               destination   = D}}
-                                  <- TrieBindings0]),
-    TrieBindings = lists:filter(fun({X, D}) ->
-                                        ets:insert_new(Table, {{X, D}, empty})
-                                end, TrieBindings1),
-    rabbit_khepri:transaction(
-      fun() ->
-              [begin
-                   Values = match_source_and_destination_in_khepri_tx(X, D),
-                   Bindings = lists:foldl(fun(SetOfBindings, Acc) ->
-                                                  sets:to_list(SetOfBindings) ++ Acc
-                                          end, [], Values),
-                   [add_topic_trie_binding_tx(X, K, D, Args) || #binding{key = K,
-                                                                         args = Args} <- Bindings]
-               end || {X, D} <- TrieBindings]
-      end);
-mnesia_write_to_khepri(rabbit_topic_trie_node, _) ->
-    %% Nothing to do, the `rabbit_topic_trie_binding` is enough to perform the migration
-    %% as Khepri stores each topic binding as a single path
-    ok;
-mnesia_write_to_khepri(rabbit_topic_trie_edge, _) ->
-    %% Nothing to do, the `rabbit_topic_trie_binding` is enough to perform the migration
-    %% as Khepri stores each topic binding as a single path
     ok.
-
-ensure_topic_migration_ets() ->
-    Tab = rabbit_topic_trie_binding_migration_table,
-    case ets:whereis(Tab) of
-        undefined ->
-            ets:new(Tab, [public, named_table]);
-        Tid ->
-            Tid
-    end.
 
 mnesia_delete_to_khepri(rabbit_queue, Q) when ?is_amqqueue(Q) ->
     khepri_delete(khepri_queue_path(amqqueue:get_name(Q)));
@@ -1341,17 +1165,7 @@ mnesia_delete_to_khepri(rabbit_durable_route, Name) ->
 mnesia_delete_to_khepri(rabbit_semi_durable_route, Route) when is_record(Route, route) ->
     khepri_delete(khepri_route_path(Route#route.binding));
 mnesia_delete_to_khepri(rabbit_semi_durable_route, Name) ->
-    khepri_delete(khepri_route_path(Name));
-mnesia_delete_to_khepri(rabbit_topic_trie_binding, #topic_trie_binding{}) ->
-    %% TODO No routing keys here, how do we do? Use the node_id to search on the tree?
-    %% Can we still query mnesia content?
-    ok;
-mnesia_delete_to_khepri(rabbit_topic_trie_node, #topic_trie_node{}) ->
-    %% TODO see above
-    ok;
-mnesia_delete_to_khepri(rabbit_topic_trie_edge, #topic_trie_edge{}) ->
-    %% TODO see above
-    ok.
+    khepri_delete(khepri_route_path(Name)).
 
 clear_data_in_khepri(rabbit_queue) ->
     khepri_delete(khepri_queues_path());
@@ -1373,13 +1187,6 @@ clear_data_in_khepri(rabbit_durable_route) ->
 clear_data_in_khepri(rabbit_semi_durable_route) ->
     ok;
 clear_data_in_khepri(rabbit_reverse_route) ->
-    ok;
-clear_data_in_khepri(rabbit_topic_trie_binding) ->
-    khepri_delete(khepri_exchange_type_topic_path());
-%% There is a single khepri entry for topics and it should be already deleted
-clear_data_in_khepri(rabbit_topic_trie_node) ->
-    ok;
-clear_data_in_khepri(rabbit_topic_trie_edge) ->
     ok.
 
 %% Internal
@@ -2408,21 +2215,6 @@ store_in_khepri(Path, Value) ->
         ok      -> ok;
         Error   -> khepri_tx:abort(Error)
     end.
-
-split_topic_trie_key(<<>>) ->
-    [<<>>];
-split_topic_trie_key(Key) ->
-    Words = split_topic_trie_key(Key, [], []),
-    [list_to_binary(W) || W <- Words].
-
-split_topic_trie_key(<<>>, [], []) ->
-    [];
-split_topic_trie_key(<<>>, RevWordAcc, RevResAcc) ->
-    lists:reverse([lists:reverse(RevWordAcc) | RevResAcc]);
-split_topic_trie_key(<<$., Rest/binary>>, RevWordAcc, RevResAcc) ->
-    split_topic_trie_key(Rest, [], [lists:reverse(RevWordAcc) | RevResAcc]);
-split_topic_trie_key(<<C:8, Rest/binary>>, RevWordAcc, RevResAcc) ->
-    split_topic_trie_key(Rest, [C | RevWordAcc], RevResAcc).
 
 retry(Fun) ->
     Until = erlang:system_time(millisecond) + (?WAIT_SECONDS * 1000),

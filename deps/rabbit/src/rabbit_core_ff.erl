@@ -282,9 +282,9 @@ delete_table(FeatureName, Tab) ->
                             {rabbit_durable_route, rabbit_store},
                             {rabbit_semi_durable_route, rabbit_store},
                             {rabbit_reverse_route, rabbit_store},
-                            {rabbit_topic_trie_binding, rabbit_store},
-                            {rabbit_topic_trie_node, rabbit_store},
-                            {rabbit_topic_trie_edge, rabbit_store}]).
+                            {rabbit_topic_trie_binding, rabbit_db_topic_exchange},
+                            {rabbit_topic_trie_node, rabbit_db_topic_exchange},
+                            {rabbit_topic_trie_edge, rabbit_db_topic_exchange}]).
 
 -define(MDS_PHASE1_TABLES, [{rabbit_vhost, rabbit_vhost},
                             {rabbit_user, rabbit_auth_backend_internal},

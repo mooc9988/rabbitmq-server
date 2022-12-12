@@ -5,7 +5,7 @@
 %% Copyright (c) 2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
--module(rabbit_exchange_type_topic_SUITE).
+-module(rabbit_db_topic_exchange_SUITE).
 
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include_lib("common_test/include/ct.hrl").
@@ -81,9 +81,9 @@ build_key_from_topic_trie_binding_record1(Config) ->
                                                                   destination = QName,
                                                                   key = RK,
                                                                   args = []}),
-    SplitRK = rabbit_exchange_type_topic:split_topic_key(RK),
+    SplitRK = rabbit_db_topic_exchange:split_topic_key(RK),
     [TopicTrieBinding] = ets:tab2list(rabbit_topic_trie_binding),
-    ?assertEqual(SplitRK, rabbit_exchange_type_topic:trie_binding_to_key(TopicTrieBinding)),
+    ?assertEqual(SplitRK, rabbit_db_topic_exchange:trie_binding_to_key(TopicTrieBinding)),
     passed.
 
 build_key_from_deletion_events(Config) ->
@@ -100,14 +100,14 @@ build_key_from_deletion_events1(Config) ->
                        key = RK,
                        args = []},
     ok = rabbit_exchange_type_topic:add_binding(none, X, Binding),
-    SplitRK = rabbit_exchange_type_topic:split_topic_key(RK),
+    SplitRK = rabbit_db_topic_exchange:split_topic_key(RK),
     Tables = [rabbit_topic_trie_binding, rabbit_topic_trie_edge],
     subscribe_to_mnesia_changes(Tables),
     rabbit_exchange_type_topic:remove_bindings(none, X, [Binding]),
     Records = receive_delete_events(7),
     unsubscribe_to_mnesia_changes(Tables),
     ?assertMatch([{_, SplitRK}],
-                 rabbit_exchange_type_topic:trie_records_to_key(Records)),
+                 rabbit_db_topic_exchange:trie_records_to_key(Records)),
     passed.
 
 build_key_from_binding_deletion_event(Config) ->
@@ -129,14 +129,14 @@ build_key_from_binding_deletion_event1(Config) ->
                        args = []},
     ok = rabbit_exchange_type_topic:add_binding(none, X, Binding0),
     ok = rabbit_exchange_type_topic:add_binding(none, X, Binding),
-    SplitRK = rabbit_exchange_type_topic:split_topic_key(RK),
+    SplitRK = rabbit_db_topic_exchange:split_topic_key(RK),
     Tables = [rabbit_topic_trie_binding, rabbit_topic_trie_edge],
     subscribe_to_mnesia_changes(Tables),
     rabbit_exchange_type_topic:remove_bindings(none, X, [Binding]),
     Records = receive_delete_events(7),
     unsubscribe_to_mnesia_changes(Tables),
     ?assertMatch([{_, SplitRK}],
-                 rabbit_exchange_type_topic:trie_records_to_key(Records)),
+                 rabbit_db_topic_exchange:trie_records_to_key(Records)),
     passed.
 
 build_multiple_key_from_deletion_events(Config) ->
@@ -159,10 +159,10 @@ build_multiple_key_from_deletion_events1(Config) ->
     ok = rabbit_exchange_type_topic:add_binding(none, X, Binding1),
     ok = rabbit_exchange_type_topic:add_binding(none, X, Binding2),
     ok = rabbit_exchange_type_topic:add_binding(none, X, Binding3),
-    SplitRK0 = rabbit_exchange_type_topic:split_topic_key(RK0),
-    SplitRK1 = rabbit_exchange_type_topic:split_topic_key(RK1),
-    SplitRK2 = rabbit_exchange_type_topic:split_topic_key(RK2),
-    SplitRK3 = rabbit_exchange_type_topic:split_topic_key(RK3),
+    SplitRK0 = rabbit_db_topic_exchange:split_topic_key(RK0),
+    SplitRK1 = rabbit_db_topic_exchange:split_topic_key(RK1),
+    SplitRK2 = rabbit_db_topic_exchange:split_topic_key(RK2),
+    SplitRK3 = rabbit_db_topic_exchange:split_topic_key(RK3),
     Tables = [rabbit_topic_trie_binding, rabbit_topic_trie_edge],
     subscribe_to_mnesia_changes(Tables),
     rabbit_exchange_type_topic:delete(none, X),
@@ -171,7 +171,7 @@ build_multiple_key_from_deletion_events1(Config) ->
     RKs = lists:sort([SplitRK0, SplitRK1, SplitRK2, SplitRK3]),
     ?assertMatch(
        RKs,
-       lists:sort([RK || {_, RK} <- rabbit_exchange_type_topic:trie_records_to_key(Records)])),
+       lists:sort([RK || {_, RK} <- rabbit_db_topic_exchange:trie_records_to_key(Records)])),
     passed.
 
 subscribe_to_mnesia_changes([Table | Rest]) ->
