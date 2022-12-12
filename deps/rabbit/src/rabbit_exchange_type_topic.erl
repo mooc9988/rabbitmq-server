@@ -17,6 +17,9 @@
          remove_bindings/3, assert_args_equivalence/2]).
 -export([info/1, info/2]).
 
+-export([split_topic_key/1, trie_binding_to_key/1,
+         trie_records_to_key/1]).
+
 -rabbit_boot_step({?MODULE,
                    [{description, "exchange type topic"},
                     {mfa,         {rabbit_registry, register,
@@ -302,3 +305,76 @@ split_topic_key(<<$., Rest/binary>>, RevWordAcc, RevResAcc) ->
     split_topic_key(Rest, [], [lists:reverse(RevWordAcc) | RevResAcc]);
 split_topic_key(<<C:8, Rest/binary>>, RevWordAcc, RevResAcc) ->
     split_topic_key(Rest, [C | RevWordAcc], RevResAcc).
+
+trie_binding_to_key(#topic_trie_binding{trie_binding = #trie_binding{node_id = NodeId}}) ->
+    rabbit_misc:execute_mnesia_transaction(
+      fun() ->
+              follow_up_get_path(NodeId, [])
+      end).
+
+follow_up_get_path(root, Acc) ->
+    Acc;
+follow_up_get_path(Node, Acc) ->
+    MatchHead = #topic_trie_edge{node_id = Node,
+                                 trie_edge = '$1'},
+    case mnesia:select(rabbit_topic_trie_edge, [{MatchHead, [], ['$1']}]) of
+        [#trie_edge{node_id = PreviousNode,
+                    word = Word}] ->
+            follow_up_get_path(PreviousNode, [Word | Acc]);
+        [] ->
+            {error, not_found}
+    end.
+
+trie_records_to_key(Records) ->
+    %% Split records on edges and bindings
+    %% Insert on ets all edges
+    %% For each binding, build its routing key
+    %% Return list of bindings and RKs
+    %% Delete ets
+    Tab = ensure_temporary_ets(),
+    TrieBindings = lists:foldl(fun(#topic_trie_binding{} = R, Acc) ->
+                                       [R | Acc];
+                                  (#topic_trie_edge{} = R, Acc) ->
+                                       ets:insert(Tab, R),
+                                       Acc;
+                                  (_, Acc) ->
+                                       Acc
+                               end, [], Records),
+    List = lists:foldl(
+             fun(#topic_trie_binding{trie_binding = #trie_binding{node_id = Node} = TB} = B,
+                 Acc) ->
+                     case follow_up_get_path_from_ets(Tab, Node) of
+                         {error, not_found} -> [{TB, trie_binding_to_key(B)} | Acc];
+                         RK -> [{TB, RK} | Acc]
+                     end
+             end, [], TrieBindings),
+    delete_temporary_ets(Tab),
+    List.
+
+follow_up_get_path_from_ets(Tab, Node) ->
+    follow_up_get_path_from_ets(Tab, Node, []).
+
+follow_up_get_path_from_ets(_Tab, root, Acc) ->
+    Acc;
+follow_up_get_path_from_ets(Tab, Node, Acc) ->
+    MatchHead = #topic_trie_edge{node_id = Node,
+                                 trie_edge = '$1'},
+    case ets:select(Tab, [{MatchHead, [], ['$1']}]) of
+        [#trie_edge{node_id = PreviousNode,
+                    word = Word}] ->
+            follow_up_get_path_from_ets(Tab, PreviousNode, [Word | Acc]);
+        [] ->
+            {error, not_found}
+    end.
+
+ensure_temporary_ets() ->
+    Tab = rabbit_exchange_type_topic_table_temp_deletion_table,
+    case ets:whereis(Tab) of
+        undefined ->
+            ets:new(Tab, [public, named_table, {keypos, #topic_trie_edge.trie_edge}]);
+        Tid ->
+            Tid
+    end.
+
+delete_temporary_ets(Tab) ->
+    ets:delete(Tab).
