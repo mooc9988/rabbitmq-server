@@ -1105,13 +1105,15 @@ add_binding_tx(Path, Binding) ->
     add_routing(Binding),
     ok.
 
-add_routing(#binding{destination = Dst} = Binding) ->
+add_routing(#binding{destination = Dst, source = Src} = Binding) ->
     Path = khepri_routing_path(Binding),
+    KeepWhile = #{khepri_exchange_path(Src) => #if_node_exists{exists = true}},
+    Options = #{keep_while => KeepWhile},
     case khepri_tx:get(Path) of
         {ok, Data} ->
-            ok = khepri_tx:put(Path, sets:add_element(Dst, Data));
+            ok = khepri_tx:put(Path, sets:add_element(Dst, Data), Options);
         _ ->
-            ok = khepri_tx:put(Path, sets:add_element(Dst, sets:new()))
+            ok = khepri_tx:put(Path, sets:add_element(Dst, sets:new()), Options)
     end.
 
 add_binding_in_mnesia(Binding, ChecksFun) ->
@@ -1602,8 +1604,6 @@ remove_bindings_for_source_in_khepri(#resource{virtual_host = VHost, name = Name
     Path = khepri_routes_path() ++ [VHost, Name],
     {ok, Bindings} = khepri_tx:get_many(Path ++ [if_has_data_wildcard()]),
     ok = khepri_tx:delete(Path),
-    %% TODO can we add keep while conditions for bindings?
-    ok = khepri_tx:delete(khepri_routing_path(Src)),
     maps:fold(fun(_, Set, Acc) ->
                       sets:to_list(Set) ++ Acc
               end, [], Bindings).
