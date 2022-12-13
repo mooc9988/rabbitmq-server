@@ -126,7 +126,7 @@ is_recoverable(Q) when ?is_amqqueue(Q) ->
      orelse not rabbit_mnesia:is_process_alive(amqqueue:get_pid(Q))).
 
 lookup_queue(Q) ->
-    case rabbit_store:lookup_queue(amqqueue:get_name(Q)) of
+    case rabbit_db_queue:get(amqqueue:get_name(Q)) of
         {error, not_found} -> false;
         {ok, _} -> true
     end.

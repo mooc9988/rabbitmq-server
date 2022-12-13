@@ -1873,8 +1873,8 @@ confirm_to_sender(Pid, QName, MsgSeqNos) ->
 
 update_state(State, Q) ->
     Decorators = rabbit_queue_decorator:active(Q),
-    rabbit_store:update_queue(amqqueue:get_name(Q),
-                              fun(Q0) ->
-                                      Q1 = amqqueue:set_state(Q0, State),
-                                      amqqueue:set_decorators(Q1, Decorators)
-                              end).
+    rabbit_db_queue:update(amqqueue:get_name(Q),
+                           fun(Q0) ->
+                                   Q1 = amqqueue:set_state(Q0, State),
+                                   amqqueue:set_decorators(Q1, Decorators)
+                           end).

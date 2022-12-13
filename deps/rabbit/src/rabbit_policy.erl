@@ -278,15 +278,15 @@ recover0() ->
           || X = #exchange{name = Name} <- Xs0],
     Qs = rabbit_amqqueue:list_durable(),
     rabbit_store:store_durable_exchanges(Xs),
-    [begin
-         QName = amqqueue:get_name(Q0),
-         Policy1 = match(QName, Policies),
-         Q1 = amqqueue:set_policy(Q0, Policy1),
-         OpPolicy1 = match(QName, OpPolicies),
-         Q2 = amqqueue:set_operator_policy(Q1, OpPolicy1),
-         Q3 = rabbit_queue_decorator:set(Q2),
-         rabbit_store:store_durable_queue(Q3)
-     end || Q0 <- Qs],
+    Qs0 = [begin
+               QName = amqqueue:get_name(Q0),
+               Policy1 = match(QName, Policies),
+               Q1 = amqqueue:set_policy(Q0, Policy1),
+               OpPolicy1 = match(QName, OpPolicies),
+               Q2 = amqqueue:set_operator_policy(Q1, OpPolicy1),
+               rabbit_queue_decorator:set(Q2)
+           end || Q0 <- Qs],
+    rabbit_db_queue:insert(Qs0),
     ok.
 
 invalid_file() ->

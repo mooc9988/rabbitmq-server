@@ -447,10 +447,11 @@ store_updated_slaves_in_khepri(Q0, Decorators) ->
     %% The amqqueue was read from this transaction, no need to handle
     %% migration.
     Q4 = amqqueue:set_decorators(Q3, Decorators),
-    rabbit_store:store_queue_in_khepri_tx(Q4),
+    %% HA queues are not supported in Khepri. This update is just enough to make
+    %% some of the current tests work, which might start some HA queue.
+    %% It will be removed before Khepri is released.
+    rabbit_db_queue:update_in_khepri(amqqueue:get_name(Q0), fun(_) -> Q4 end),
     %% Wake it up so that we emit a stats event
-    %% TODO check this notification in khepri tx!!! It ends up calling the queue type,
-    %% it could do anything. I think it should be a side-effect
     rabbit_amqqueue:notify_policy_changed(Q3),
     Q3.
 
@@ -525,7 +526,7 @@ remove_all_slaves_in_khepri(QName, PendingSlavePids) ->
     Decorators = rabbit_queue_decorator:list(),
     rabbit_khepri:transaction(
       fun () ->
-              [Q0] = rabbit_store:lookup_queue_in_khepri_tx(QName),
+              [Q0] = rabbit_db_queue:get_in_khepri_tx(QName),
               Q1 = amqqueue:set_gm_pids(Q0, []),
               Q2 = amqqueue:set_slave_pids(Q1, []),
               %% Restarted mirrors on running nodes can

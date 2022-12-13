@@ -171,16 +171,16 @@ do_mark_local_durable_queues_stopped(VHost) ->
     Qs = [amqqueue:set_state(Q, stopped)
           || Q <- Qs0, amqqueue:get_type(Q) =:= rabbit_classic_queue,
              amqqueue:get_state(Q) =/= stopped ],
-    rabbit_store:store_queues(Qs).
+    rabbit_db_queue:insert(Qs).
 
 find_recoverable_queues() ->
-    Qs = rabbit_store:list_durable_queues(),
+    Qs = rabbit_db_queue:get_all_durable(),
     lists:filter(fun(Q) ->
                          rabbit_queue_type:is_recoverable(Q)
                  end, Qs).
 
 find_local_durable_queues(VHost) ->
-    Qs = rabbit_store:list_durable_queues(VHost),
+    Qs = rabbit_db_queue:get_all_durable(VHost),
     lists:filter(fun(Q) ->
                          rabbit_queue_type:is_recoverable(Q)
                  end, Qs).
@@ -264,19 +264,19 @@ do_internal_declare(Q0, false) ->
     Q = rabbit_policy:set(amqqueue:set_state(Q0, live)),
     Queue = rabbit_queue_decorator:set(Q),
     DurableQueue = amqqueue:reset_mirroring_and_decorators(Q),
-    rabbit_store:store_queue_without_recover(DurableQueue, Queue).
+    rabbit_db_queue:create_or_get(DurableQueue, Queue).
 
 store_queue(Q0) ->
     Q = rabbit_queue_decorator:set(Q0),
     DurableQ = amqqueue:reset_mirroring_and_decorators(Q0),
-    rabbit_store:store_queue(DurableQ, Q).
+    rabbit_db_queue:insert(DurableQ, Q).
 
 -spec update
         (name(), fun((amqqueue:amqqueue()) -> amqqueue:amqqueue())) ->
             'not_found' | amqqueue:amqqueue().
 
 update(Name, Fun) ->
-    rabbit_store:update_queue(Name, Fun).
+    rabbit_db_queue:update(Name, Fun).
 
 %% only really used for quorum queues to ensure the rabbit_queue record
 %% is initialised
@@ -286,7 +286,7 @@ ensure_rabbit_queue_record_is_initialized(Q) ->
 -spec update_decorators(name(), [atom()] | none | undefined) -> 'ok'.
 
 update_decorators(Name, Decorators) ->
-    rabbit_store:update_queue_decorators(Name, Decorators).
+    rabbit_db_queue:update_decorators(Name, Decorators).
 
 -spec policy_changed(amqqueue:amqqueue(), amqqueue:amqqueue()) ->
           'ok'.
@@ -327,14 +327,14 @@ is_server_named_allowed(Args) ->
 lookup([]) ->
     []; %% optimisation
 lookup(Names) ->
-    rabbit_store:lookup_queues(Names).
+    rabbit_db_queue:get(Names).
 
 -spec exists(name()) -> boolean().
 exists(Name) ->
-    rabbit_store:exists_queue(Name).
+    rabbit_db_queue:exists(Name).
 
 lookup_durable_queue(Name) ->
-    rabbit_store:lookup_durable_queue(Name).
+    rabbit_db_queue:get_durable(Name).
 
 -spec get_rebalance_lock(pid()) ->
     {true, {rebalance_queues, pid()}} | false.
@@ -526,7 +526,7 @@ with(#resource{} = Name, F, E, RetriesLeft) ->
               fun () -> retry_wait(Q, F, E, RetriesLeft) end,
               fun () -> F(Q) end);
         {error, not_found} ->
-            E(rabbit_store:not_found_or_absent_queue_dirty(Name))
+            E(rabbit_db_queue:not_found_or_absent_queue_dirty(Name))
     end.
 
 -spec retry_wait(amqqueue:amqqueue(),
@@ -1026,7 +1026,7 @@ check_queue_type(_Val, _Args) ->
 -spec list() -> [amqqueue:amqqueue()].
 
 list() ->
-    All = rabbit_store:list_queues(),
+    All = rabbit_db_queue:get_all(),
     NodesRunning = rabbit_nodes:all_running(),
     lists:filter(fun (Q) ->
                          Pid = amqqueue:get_pid(Q),
@@ -1035,17 +1035,17 @@ list() ->
                  end, All).
 
 list_durable() ->
-    rabbit_store:list_durable_queues().
+    rabbit_db_queue:get_all_durable().
 
 -spec count() -> non_neg_integer().
 
 count() ->
-    rabbit_store:count_queues().
+    rabbit_db_queue:count().
 
 -spec list_names() -> [rabbit_amqqueue:name()].
 
 list_names() ->
-    rabbit_store:list_queue_names().
+    rabbit_db_queue:list().
 
 list_names(VHost) -> [amqqueue:get_name(Q) || Q <- list(VHost)].
 
@@ -1103,7 +1103,7 @@ list_by_type(classic) -> list_by_type(rabbit_classic_queue);
 list_by_type(quorum)  -> list_by_type(rabbit_quorum_queue);
 list_by_type(stream)  -> list_by_type(rabbit_stream_queue);
 list_by_type(Type) ->
-    rabbit_store:list_durable_queues_by_type(Type).
+    rabbit_db_queue:get_all_durable_by_type(Type).
 
 -spec list_local_quorum_queue_names() -> [rabbit_amqqueue:name()].
 
@@ -1209,7 +1209,7 @@ is_in_virtual_host(Q, VHostName) ->
 
 -spec list(vhost:name()) -> [amqqueue:amqqueue()].
 list(VHostPath) ->
-    All = rabbit_store:list_queues(VHostPath),
+    All = rabbit_db_queue:get_all(VHostPath),
     NodesRunning = rabbit_nodes:all_running(),
     lists:filter(fun (Q) ->
                          Pid = amqqueue:get_pid(Q),
@@ -1224,7 +1224,7 @@ list_down(VHostPath) ->
         false -> [];
         true  ->
             Alive = sets:from_list([amqqueue:get_name(Q) || Q <- list(VHostPath)]),
-            Durable = rabbit_store:list_durable_queues(VHostPath),
+            Durable = rabbit_db_queue:get_all_durable(VHostPath),
             NodesRunning = rabbit_nodes:all_running(),
             lists:filter(fun (Q) ->
                                  N = amqqueue:get_name(Q),
@@ -1237,7 +1237,7 @@ list_down(VHostPath) ->
     end.
 
 count(VHost) ->
-    rabbit_store:count_queues(VHost).
+    rabbit_db_queue:count(VHost).
 
 -spec info_keys() -> rabbit_types:info_keys().
 
@@ -1652,7 +1652,7 @@ internal_delete(QueueName, ActingUser) ->
     internal_delete(QueueName, ActingUser, normal).
 
 internal_delete(QueueName, ActingUser, Reason) ->
-    case rabbit_store:delete_queue(QueueName, Reason) of
+    case rabbit_db_queue:delete(QueueName, Reason) of
         ok ->
             ok;
         Deletions ->
@@ -1698,7 +1698,7 @@ forget_node_for_queue(_DeadNode, [], Q) ->
     %% Don't process_deletions since that just calls callbacks and we
     %% are not really up.
     Name = amqqueue:get_name(Q),
-    rabbit_store:internal_delete_queue(Name, true, normal);
+    rabbit_db_queue:internal_delete(Name, true, normal);
 
 %% Should not happen, but let's be conservative.
 forget_node_for_queue(DeadNode, [DeadNode | T], Q) ->
@@ -1803,7 +1803,7 @@ has_synchronised_mirrors_online(Q) ->
 %% TODO review this one with khepri clustering. It might not be needed anymore?
 %% Also when HA queues are deleted
 on_node_up(Node) ->
-    %% This could be moved to rabbit_store, but is going to be removed anyway with HA queues
+    %% This could be moved to rabbit_db_queue, but is going to be removed anyway with HA queues
     rabbit_khepri:try_mnesia_or_khepri(
       fun() ->
               ok = rabbit_misc:execute_mnesia_transaction(
@@ -1878,11 +1878,10 @@ notify_queue_binding_deletions(QueueDeletions) ->
     rabbit_binding:notify_deletions(Deletions, ?INTERNAL_USER).
 
 delete_queues_on_node_down(Node) ->
-    %% TODO partitions are probably not necessary for Khepri, but leave it like this until we
-    %% do more testing
+    %% Only called when running mnesia
     Partitions = partition_queues(queues_to_delete_when_node_down(Node)),
     lists:unzip(lists:flatten(
-                  [case rabbit_store:delete_transient_queues(Queues) of
+                  [case rabbit_db_queue:delete_transient(Queues) of
                        {error, noproc} -> [];
                        {error, {timeout, _}} -> [];
                        Value -> Value
@@ -1903,7 +1902,7 @@ partition_queues(T) ->
     [T].
 
 queues_to_delete_when_node_down(NodeDown) ->
-    Qs = rabbit_store:list_queues(),
+    Qs = rabbit_db_queue:get_all(),
     lists:foldl(fun(Q, Acc) ->
                         case amqqueue:qnode(Q) == NodeDown andalso
                             not rabbit_mnesia:is_process_alive(amqqueue:get_pid(Q)) andalso
@@ -2007,4 +2006,4 @@ get_bcc_queue(Q, BCCName) ->
     rabbit_amqqueue:lookup(BCCQueueName).
 
 not_found_or_absent_dirty(Name) ->
-    rabbit_store:not_found_or_absent_queue_dirty(Name).
+    rabbit_db_queue:not_found_or_absent_queue_dirty(Name).
