@@ -213,7 +213,7 @@ recover() ->
 
 list_exchanges() ->
     Pattern = #exchange{durable = true, type = 'x-consistent-hash', _ = '_'},
-    rabbit_store:match_exchanges(Pattern).
+    rabbit_db_exchange:match(Pattern).
 
 recover_exchange_and_bindings(#exchange{name = XName} = X) ->
     rabbit_khepri:try_mnesia_or_khepri(

@@ -269,7 +269,7 @@ recover() ->
 %% recovery has not yet happened; we must work with the rabbit_durable_<thing>
 %% variants.
 recover0() ->
-    Xs0 = rabbit_store:list_durable_exchanges(),
+    Xs0 = rabbit_db_exchange:get_all_durable(),
     Policies = list(),
     OpPolicies = list_op(),
     Xs = [rabbit_exchange_decorator:set(
@@ -277,7 +277,7 @@ recover0() ->
                        operator_policy = match(Name, OpPolicies)})
           || X = #exchange{name = Name} <- Xs0],
     Qs = rabbit_amqqueue:list_durable(),
-    rabbit_store:store_durable_exchanges(Xs),
+    rabbit_db_exchange:insert(Xs),
     Qs0 = [begin
                QName = amqqueue:get_name(Q0),
                Policy1 = match(QName, Policies),

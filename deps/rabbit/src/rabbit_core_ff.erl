@@ -275,9 +275,9 @@ delete_table(FeatureName, Tab) ->
 %% TODO should they be integrated on phase1?
 -define(MDS_PHASE2_TABLES, [{rabbit_queue, rabbit_db_queue},
                             {rabbit_durable_queue, rabbit_db_queue},
-                            {rabbit_exchange, rabbit_store},
-                            {rabbit_durable_exchange, rabbit_store},
-                            {rabbit_exchange_serial, rabbit_store},
+                            {rabbit_exchange, rabbit_db_exchange},
+                            {rabbit_durable_exchange, rabbit_db_exchange},
+                            {rabbit_exchange_serial, rabbit_db_exchange},
                             {rabbit_route, rabbit_store},
                             {rabbit_durable_route, rabbit_store},
                             {rabbit_semi_durable_route, rabbit_store},

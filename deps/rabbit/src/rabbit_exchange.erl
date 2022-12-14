@@ -35,7 +35,7 @@
 -spec recover(rabbit_types:vhost()) -> [name()].
 
 recover(VHost) ->
-    Xs = rabbit_store:recover_exchanges(VHost),
+    Xs = rabbit_db_exchange:recover(VHost),
     [XName || #exchange{name = XName} <- Xs].
 
 -spec callback
@@ -43,7 +43,7 @@ recover(VHost) ->
 
 callback(X = #exchange{decorators = Decorators, name = XName}, Fun, Serial, Args) ->
     case Fun of
-        delete -> rabbit_store:delete_exchange_serial(XName);
+        delete -> rabbit_db_exchange:delete_serial(XName);
         _ -> ok
     end,
     Modules = rabbit_exchange_decorator:select(all, Decorators),
@@ -83,12 +83,12 @@ serialise_events(X = #exchange{type = Type, decorators = Decorators}) ->
 serial(X) ->
     case rabbit_exchange:serialise_events(X) of
         false -> 'none';
-        true -> rabbit_store:next_exchange_serial(X)
+        true -> rabbit_db_exchange:next_serial(X)
     end.
 
 -spec peek_serial(name()) -> pos_integer() | 'undefined'.
 peek_serial(XName) ->
-    rabbit_store:peek_exchange_serial(XName, read).
+    rabbit_db_exchange:peek_serial(XName).
 
 -spec is_amq_prefixed(rabbit_types:exchange() | binary()) -> boolean().
 
@@ -139,7 +139,7 @@ declare(XName, Type, Durable, AutoDelete, Internal, Args, Username) ->
                     (Response) ->
                         Response
                 end,
-            case rabbit_store:create_exchange(X, PostCommitFun) of
+            case PostCommitFun(rabbit_db_exchange:create_or_get(X)) of
                 {new, Exchange} -> Exchange;
                 {existing, Exchange} -> Exchange;
                 Err -> Err
@@ -201,14 +201,14 @@ assert_args_equivalence(#exchange{ name = Name, arguments = Args },
 
 -spec exists(name()) -> boolean().
 exists(Name) ->
-    rabbit_store:exists_exchange(Name).
+    rabbit_db_exchange:exists(Name).
 
 -spec lookup
         (name()) -> rabbit_types:ok(rabbit_types:exchange()) |
                     rabbit_types:error('not_found').
 
 lookup(Name) ->
-    rabbit_store:lookup_exchange(Name).
+    rabbit_db_exchange:get(Name).
 
 -spec lookup_many([name()]) -> [rabbit_types:exchange()].
 
@@ -216,7 +216,7 @@ lookup(Name) ->
 lookup_many([]) ->
     [];
 lookup_many(Names) ->
-    rabbit_store:lookup_many_exchanges(Names).
+    rabbit_db_exchange:get_many(Names).
 
 -spec lookup_or_die
         (name()) -> rabbit_types:exchange() |
@@ -231,22 +231,22 @@ lookup_or_die(Name) ->
 -spec list() -> [rabbit_types:exchange()].
 
 list() ->
-    rabbit_store:list_exchanges().
+    rabbit_db_exchange:get_all().
 
 -spec count() -> non_neg_integer().
 
 count() ->
-    rabbit_store:count_exchanges().
+    rabbit_db_exchange:count().
 
 -spec list_names() -> [rabbit_exchange:name()].
 
 list_names() ->
-    rabbit_store:list_exchange_names().
+    rabbit_db_exchange:list().
 
 -spec list(rabbit_types:vhost()) -> [rabbit_types:exchange()].
 
 list(VHostPath) ->
-    rabbit_store:list_exchanges(VHostPath).
+    rabbit_db_exchange:get_all(VHostPath).
 
 -spec lookup_scratch(name(), atom()) ->
                                rabbit_types:ok(term()) |
@@ -268,11 +268,11 @@ lookup_scratch(Name, App) ->
 -spec update_scratch(name(), atom(), fun((any()) -> any())) -> 'ok'.
 
 update_scratch(Name, App, Fun) ->
-    Decorators = case rabbit_store:lookup_exchange(Name) of
+    Decorators = case rabbit_db_exchange:get(Name) of
                      {ok, X} -> rabbit_exchange_decorator:active(X);
                      {error, not_found} -> []
                  end,
-    rabbit_store:update_exchange_scratch(Name, update_scratch_fun(App, Fun, Decorators)),
+    rabbit_db_exchange:update(Name, update_scratch_fun(App, Fun, Decorators)),
     ok.
 
 update_scratch_fun(App, Fun, Decorators) ->
@@ -293,7 +293,8 @@ update_scratch_fun(App, Fun, Decorators) ->
 -spec update_decorators(name(), [atom()] | none | undefined) -> 'ok'.
 
 update_decorators(Name, Decorators) ->
-    rabbit_store:update_exchange_decorators(Name, Decorators).
+    Fun = fun(X) -> X#exchange{decorators = Decorators} end,
+    rabbit_db_exchange:update(Name, Fun).
 
 -spec immutable(rabbit_types:exchange()) -> rabbit_types:exchange().
 
@@ -444,7 +445,7 @@ delete(XName, IfUnused, Username) ->
         rabbit_runtime_parameters:set(XName#resource.virtual_host,
                                       ?EXCHANGE_DELETE_IN_PROGRESS_COMPONENT,
                                       XName#resource.name, true, Username),
-        Deletions = rabbit_store:delete_exchange(XName, IfUnused, fun process_deletions/1),
+        Deletions = process_deletions(rabbit_db_exchange:delete(XName, IfUnused)),
         rabbit_binding:notify_deletions(Deletions, Username)
     after
         rabbit_runtime_parameters:clear(XName#resource.virtual_host,
