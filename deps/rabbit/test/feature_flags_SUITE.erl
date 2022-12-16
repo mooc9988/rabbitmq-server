@@ -1263,12 +1263,6 @@ inject_ff_on_nodes(Config, Nodes, FeatureFlags)
                 [FeatureFlags])
       end, Nodes).
 
-%% Convert to the format expected on RabbitMQ up-to 3.10.x.
-feature_flags_to_app_attrs(FeatureFlags) when is_map(FeatureFlags) ->
-    [{?MODULE, % Application
-      ?MODULE, % Module
-      maps:to_list(FeatureFlags)}].
-
 block(Pairs)   -> [block(X, Y) || {X, Y} <- Pairs].
 unblock(Pairs) -> [allow(X, Y) || {X, Y} <- Pairs].
 
