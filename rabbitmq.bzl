@@ -274,7 +274,14 @@ def rabbitmq_integration_suite(
             #   user_limits
             # Starting from 3.12.0:
             #   feature_flags_v2
-            "RABBITMQ_FEATURE_FLAGS": "quorum_queue,implicit_default_bindings,virtual_host_metadata,maintenance_mode_status,user_limits,feature_flags_v2",
+            #   classic_mirrored_queue_version
+            #   stream_queue
+            #   stream_single_active_consumer
+            #   direct_exchange_routing_v2
+            #   listener_records_in_ets
+            #   tracking_records_in_ets
+            #   classic_queue_type_delivery_support
+            "RABBITMQ_FEATURE_FLAGS": "quorum_queue,implicit_default_bindings,virtual_host_metadata,maintenance_mode_status,user_limits,feature_flags_v2,classic_mirrored_queue_version,stream_queue,stream_single_active_consumer,direct_exchange_routing_v2,listener_records_in_ets,tracking_records_in_ets,classic_queue_type_delivery_support",
             "RABBITMQ_RUN": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/rabbitmq-for-tests-run".format(package),
             "RABBITMQCTL": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/broker-for-tests-home/sbin/rabbitmqctl".format(package),
             "RABBITMQ_PLUGINS": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/broker-for-tests-home/sbin/rabbitmq-plugins".format(package),
