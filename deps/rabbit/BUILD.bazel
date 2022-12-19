@@ -695,6 +695,11 @@ suites = [
         name = "rabbit_core_metrics_gc_SUITE",
         size = "medium",
     ),
+    rabbitmq_integration_suite(
+        PACKAGE,
+        name = "rabbit_db_topic_exchange_SUITE",
+        size = "medium",
+    ),
     rabbitmq_suite(
         name = "rabbit_fifo_int_SUITE",
         size = "medium",
