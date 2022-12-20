@@ -500,7 +500,7 @@ match(Pattern0) ->
       Exists :: boolean().
 %% @doc Indicates if the exchange named `Name' exists.
 %%
-%% @returns true if the virtual host exists, false otherwise.
+%% @returns true if the exchange exists, false otherwise.
 %%
 %% @private
 
@@ -640,11 +640,11 @@ update_in_khepri(Name, Fun) ->
 delete_in_mnesia(X = #exchange{name = XName}, OnlyDurable, RemoveBindingsForSource) ->
     ok = mnesia:delete({rabbit_exchange, XName}),
     mnesia:delete({rabbit_durable_exchange, XName}),
-    rabbit_store:remove_bindings_in_mnesia(X, OnlyDurable, RemoveBindingsForSource).
+    rabbit_db_binding:delete_all_for_exchange_in_mnesia(X, OnlyDurable, RemoveBindingsForSource).
 
 delete_in_khepri(X = #exchange{name = XName}, OnlyDurable, RemoveBindingsForSource) ->
     ok = khepri_tx:delete(khepri_exchange_path(XName)),
-    rabbit_store:remove_bindings_in_khepri(X, OnlyDurable, RemoveBindingsForSource).
+    rabbit_db_binding:delete_all_for_exchange_in_khepri(X, OnlyDurable, RemoveBindingsForSource).
 
 get_in_khepri(Name) ->
     Path = khepri_exchange_path(Name),
@@ -668,13 +668,13 @@ get_many_in_khepri(Names) when is_list(Names) ->
                 end, [], Names).
 
 conditional_delete_in_khepri(X = #exchange{name = XName}, OnlyDurable) ->
-    case rabbit_store:binding_has_for_source_in_khepri(XName) of
+    case rabbit_db_binding:has_for_source_in_khepri(XName) of
         false  -> delete_in_khepri(X, OnlyDurable, false);
         true   -> {error, in_use}
     end.
 
 conditional_delete_in_mnesia(X = #exchange{name = XName}, OnlyDurable) ->
-    case rabbit_store:binding_has_for_source_in_mnesia(XName) of
+    case rabbit_db_binding:has_for_source_in_mnesia(XName) of
         false  -> delete_in_mnesia(X, OnlyDurable, false);
         true   -> {error, in_use}
     end.

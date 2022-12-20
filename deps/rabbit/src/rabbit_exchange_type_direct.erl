@@ -35,9 +35,9 @@ route(#exchange{name = Name},
       #delivery{message = #basic_message{routing_keys = Routes}}) ->
     case rabbit_feature_flags:is_enabled(direct_exchange_routing_v2, non_blocking) of
         true ->
-            rabbit_store:match_routing_key(Name, Routes, true);
+            rabbit_db_binding:match_routing_key(Name, Routes, true);
         _ ->
-            rabbit_store:match_routing_key(Name, Routes, false)
+            rabbit_db_binding:match_routing_key(Name, Routes, false)
     end.
 
 validate(_X) -> ok.

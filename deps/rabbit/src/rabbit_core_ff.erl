@@ -149,26 +149,28 @@
       Args :: rabbit_feature_flags:enable_callback_args(),
       Ret :: rabbit_feature_flags:enable_callback_ret().
 direct_exchange_routing_v2_enable(#{feature_name := FeatureName}) ->
-    TableName = rabbit_index_route,
-    ok = rabbit_table:wait([rabbit_route], _Retry = true),
-    try
-        ok = rabbit_table:create(
-               TableName, rabbit_table:rabbit_index_route_definition()),
-        case rabbit_table:ensure_table_copy(TableName, node(), ram_copies) of
-            ok ->
-                ok = rabbit_binding:populate_index_route_table();
-            {error, Err} = Error ->
-                rabbit_log_feature_flags:error(
-                  "Feature flags: `~ts`: failed to add copy of table ~ts to "
-                  "node ~tp: ~tp",
-                  [FeatureName, TableName, node(), Err]),
-                Error
-        end
-    catch throw:{error, Reason} ->
-              rabbit_log_feature_flags:error(
-                "Feature flags: `~ts`: enable callback failure: ~tp",
-                [FeatureName, Reason]),
-              {error, Reason}
+    case rabbit_store:is_migration_done(raft_based_metadata_store_phase1) of
+        true ->
+            %% The routing shortcut should be disabled after enabling Khepri
+            ok;
+        false ->
+           try
+               case rabbit_db_binding:create_index_route_table() of
+                   ok ->
+                        ok;
+                   {error, Err} = Error ->
+                       rabbit_log_feature_flags:error(
+                         "Feature flags: `~ts`: failed to add copy of table ~ts to "
+                         "node ~tp: ~tp",
+                         [FeatureName, rabbit_index_route, node(), Err]),
+                       Error
+               end
+           catch throw:{error, Reason} ->
+                   rabbit_log_feature_flags:error(
+                     "Feature flags: `~ts`: enable callback failure: ~tp",
+                     [FeatureName, Reason]),
+                   {error, Reason}
+           end
     end.
 
 %% -------------------------------------------------------------------
@@ -278,10 +280,10 @@ delete_table(FeatureName, Tab) ->
                             {rabbit_exchange, rabbit_db_exchange},
                             {rabbit_durable_exchange, rabbit_db_exchange},
                             {rabbit_exchange_serial, rabbit_db_exchange},
-                            {rabbit_route, rabbit_store},
-                            {rabbit_durable_route, rabbit_store},
-                            {rabbit_semi_durable_route, rabbit_store},
-                            {rabbit_reverse_route, rabbit_store},
+                            {rabbit_route, rabbit_db_binding},
+                            {rabbit_durable_route, rabbit_db_binding},
+                            {rabbit_semi_durable_route, rabbit_db_binding},
+                            {rabbit_reverse_route, rabbit_db_binding},
                             {rabbit_topic_trie_binding, rabbit_db_topic_exchange},
                             {rabbit_topic_trie_node, rabbit_db_topic_exchange},
                             {rabbit_topic_trie_edge, rabbit_db_topic_exchange}]).

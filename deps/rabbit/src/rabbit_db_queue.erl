@@ -500,7 +500,7 @@ get_many_in_khepri(Names) when is_list(Names) ->
 
 delete_transient_in_mnesia(QName) ->
     ok = mnesia:delete({rabbit_queue, QName}),
-    rabbit_store:remove_transient_bindings_for_destination_in_mnesia(QName).
+    rabbit_db_binding:delete_transient_for_destination_in_mnesia(QName).
 
 get_all_in_mnesia(VHost) ->
     list_with_possible_retry_in_mnesia(
@@ -597,7 +597,7 @@ delete_in_khepri(Name) ->
                   {ok, #{data := _}} ->
                       %% we want to execute some things, as decided by rabbit_exchange,
                       %% after the transaction.
-                      rabbit_store:remove_bindings_for_destination_in_khepri(Name, false);
+                      rabbit_db_binding:delete_for_destination_in_khepri(Name, false);
                   {ok, _} ->
                       ok
               end
@@ -616,7 +616,7 @@ internal_delete_in_mnesia(QueueName, OnlyDurable, Reason) ->
     end,
     %% we want to execute some things, as decided by rabbit_exchange,
     %% after the transaction.
-    rabbit_store:remove_bindings_for_destination_in_mnesia(QueueName, OnlyDurable).
+    rabbit_db_binding:delete_for_destination_in_mnesia(QueueName, OnlyDurable).
 
 list_for_count(VHost) ->
     rabbit_khepri:try_mnesia_or_khepri(

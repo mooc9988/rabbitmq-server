@@ -100,7 +100,7 @@ mnesia_write_to_khepri(rabbit_topic_trie_binding, TrieBindings0) ->
     rabbit_khepri:transaction(
       fun() ->
               [begin
-                   Values = rabbit_store:match_source_and_destination_in_khepri_tx(X, D),
+                   Values = rabbit_db_binding:match_source_and_destination_in_khepri_tx(X, D),
                    Bindings = lists:foldl(fun(SetOfBindings, Acc) ->
                                                   sets:to_list(SetOfBindings) ++ Acc
                                           end, [], Values),

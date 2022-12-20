@@ -16,6 +16,7 @@
       VHostName :: vhost:name(),
       Exchange :: rabbit_types:exchange(),
       Queue :: amqqueue:amqqueue(),
+      UpdateXFun :: fun((Exchange) -> Exchange),
       UpdateQFun :: fun((Queue) -> Queue),
       Ret :: {[{Exchange, Exchange}], [{Queue, Queue}]}.
 

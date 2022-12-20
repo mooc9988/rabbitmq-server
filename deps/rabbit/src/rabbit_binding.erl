@@ -18,7 +18,7 @@
          process_deletions/1, notify_deletions/2, group_bindings_fold/3]).
 -export([info_keys/0, info/1, info/2, info_all/1, info_all/2, info_all/4]).
 
--export([implicit_for_destination/1, reverse_binding/1, populate_index_route_table/0]).
+-export([implicit_for_destination/1, reverse_binding/1]).
 -export([new/4]).
 -export([reverse_route/1, index_route/1]).
 -export([binding_type/2]).
@@ -72,7 +72,7 @@ new(Src, RoutingKey, Dst, Arguments) ->
 %% Global table recovery
 
 recover() ->
-    rabbit_store:recover_bindings().
+    rabbit_db_binding:recover().
 
 %% Virtual host-specific recovery
 
@@ -85,21 +85,21 @@ recover(XNames, QNames) ->
     SelectSet = fun (#resource{kind = exchange}) -> XNameSet;
                     (#resource{kind = queue})    -> QNameSet
                 end,
-    rabbit_store:recover_bindings(
-      fun(Binding, Src, Dst, Fun, Store) ->
-              recover_semi_durable_route(Gatherer, Binding, Src, Dst, SelectSet(Dst), Fun, Store)
+    rabbit_db_binding:recover(
+      fun(Binding, Src, Dst, Fun) ->
+              recover_semi_durable_route(Gatherer, Binding, Src, Dst, SelectSet(Dst), Fun)
       end),
     empty = gatherer:out(Gatherer),
     ok = gatherer:stop(Gatherer),
     ok.
 
-recover_semi_durable_route(Gatherer, Binding, Src, Dst, ToRecover, Fun, Store) ->
+recover_semi_durable_route(Gatherer, Binding, Src, Dst, ToRecover, Fun) ->
     case sets:is_element(Dst, ToRecover) of
         true  -> {ok, X} = rabbit_exchange:lookup(Src),
                  ok = gatherer:fork(Gatherer),
                  ok = worker_pool:submit_async(
                         fun () ->
-                                Fun(Binding, X, Store),
+                                Fun(Binding, X),
                                 gatherer:finish(Gatherer)
                         end);
         false -> ok
@@ -117,7 +117,7 @@ exists(#binding{source = ?DEFAULT_EXCHANGE(_),
     end;
 exists(Binding0) ->
     Binding = sort_args(Binding0),
-    rabbit_store:exists_binding(Binding).
+    rabbit_db_binding:exists(Binding).
 
 -spec add(rabbit_types:binding(), rabbit_types:username()) -> bind_res().
 
@@ -129,7 +129,7 @@ add(Binding, ActingUser) ->
 add(Binding0, ConnPid, ActingUser) ->
     Binding = sort_args(Binding0),
     case
-        rabbit_store:add_binding(Binding, binding_checks(Binding, ConnPid))
+        rabbit_db_binding:create(Binding, binding_checks(Binding, ConnPid))
     of
         ok ->
             ok = rabbit_event:notify(
@@ -160,7 +160,7 @@ binding_type0(_, _) ->
 remove(Binding0, ConnPid, ActingUser) ->
     Binding = sort_args(Binding0),
     case
-        rabbit_store:delete_binding(Binding, binding_checks(ConnPid))
+        rabbit_db_binding:delete(Binding, binding_checks(ConnPid))
     of
         ok ->
             ok;
@@ -173,12 +173,12 @@ remove(Binding0, ConnPid, ActingUser) ->
 -spec list_explicit() -> bindings().
 
 list_explicit() ->
-    rabbit_store:list_explicit_bindings().
+    rabbit_db_binding:get_all_explicit().
 
 -spec list(rabbit_types:vhost()) -> bindings().
 
 list(VHostPath) ->
-    ExplicitBindings = rabbit_store:list_bindings(VHostPath),
+    ExplicitBindings = rabbit_db_binding:get_all(VHostPath),
     implicit_bindings(VHostPath) ++ ExplicitBindings.
 
 -spec list_for_source
@@ -187,7 +187,7 @@ list(VHostPath) ->
 list_for_source(?DEFAULT_EXCHANGE(VHostPath)) ->
     implicit_bindings(VHostPath);
 list_for_source(Resource) ->
-    rabbit_store:list_bindings_for_source(Resource).
+    rabbit_db_binding:get_all_for_source(Resource).
 
 -spec list_for_destination
         (rabbit_types:binding_destination()) -> bindings().
@@ -216,7 +216,7 @@ has_any_between(Source, Destination) ->
     list_between(Source, Destination) =/= [].
 
 list_for_destination(DstName) ->
-    ExplicitBindings = rabbit_store:list_bindings_for_destination(DstName),
+    ExplicitBindings = rabbit_db_binding:get_all_for_destination(DstName),
     implicit_for_destination(DstName) ++ ExplicitBindings.
 
 implicit_bindings(VHostPath) ->
@@ -250,7 +250,7 @@ list_for_source_and_destination(?DEFAULT_EXCHANGE(VHostPath),
               key = QName,
               args = []}];
 list_for_source_and_destination(SrcName, DstName) ->
-    rabbit_store:list_bindings_for_source_and_destination(SrcName, DstName).
+    rabbit_db_binding:get_all(SrcName, DstName).
 
 -spec info_keys() -> rabbit_types:info_keys().
 
@@ -297,8 +297,6 @@ info_all(VHostPath, Items, Ref, AggregatorPid) ->
     rabbit_control_misc:emitting_map(
       AggregatorPid, Ref, fun(B) -> info(B, Items) end, list(VHostPath)).
 
-populate_index_route_table() ->
-    rabbit_store:populate_index_route_table().
 %%----------------------------------------------------------------------------
 
 durable(#exchange{durable = D}) -> D;

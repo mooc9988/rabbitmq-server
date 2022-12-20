@@ -626,7 +626,7 @@ get_data(exchange_bindings, _, _, _) ->
                                 (#exchange{name = EName, type = EType}, Acc) ->
                                     maps:put(EName, #{type => atom_to_binary(EType), binding_count => 0}, Acc)
                             end, #{}, rabbit_exchange:list()),
-    WithCount = rabbit_store:fold_bindings(
+    WithCount = rabbit_db_binding:fold(
                   fun (#binding{source = EName}, Acc) ->
                           case maps:is_key(EName, Acc) of
                               false -> Acc;

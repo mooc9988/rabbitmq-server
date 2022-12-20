@@ -25,14 +25,14 @@
     match_result().
 
 match_bindings(SrcName, Match) ->
-    rabbit_store:match_bindings(SrcName, Match).
+    rabbit_db_binding:match(SrcName, Match).
 
 -spec match_routing_key(rabbit_types:binding_source(),
                         [routing_key(), ...] | ['_']) ->
     match_result().
 
 match_routing_key(SrcName, RoutingKeys) ->
-    rabbit_store:match_routing_key(SrcName, RoutingKeys, false).
+    rabbit_db_binding:match_routing_key(SrcName, RoutingKeys, false).
 
 %%--------------------------------------------------------------------
 
