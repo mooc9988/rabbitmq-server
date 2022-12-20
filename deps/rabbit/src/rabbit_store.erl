@@ -22,8 +22,6 @@
 %% Routing. These functions are in the hot code path
 -export([match_bindings/2, match_routing_key/3]).
 
--export([update_policies/3]).
-
 -export([init/0, sync/0]).
 -export([set_migration_flag/1, is_migration_done/1]).
 
@@ -372,70 +370,6 @@ destinations(SrcName, RoutingKey) ->
     catch
         error:badarg ->
             []
-    end.
-
-
-%% Policies
-%% --------------------------------------------------------------
-
-update_policies(VHost, GetUpdatedExchangeFun, GetUpdatedQueueFun) ->
-    rabbit_khepri:try_mnesia_or_khepri(
-      fun() ->
-              update_policies_in_mnesia(VHost, GetUpdatedExchangeFun, GetUpdatedQueueFun)
-      end,
-      fun() ->
-              update_policies_in_khepri(VHost, GetUpdatedExchangeFun, GetUpdatedQueueFun)
-      end).
-
-
-%% [1] We need to prevent this from becoming O(n^2) in a similar
-%% manner to rabbit_binding:remove_for_{source,destination}. So see
-%% the comment in rabbit_binding:lock_route_tables/0 for more rationale.
-update_policies_in_mnesia(VHost, GetUpdatedExchangeFun, GetUpdatedQueueFun) ->
-    Tabs = [rabbit_queue,    rabbit_durable_queue,
-            rabbit_exchange, rabbit_durable_exchange],
-    rabbit_misc:execute_mnesia_transaction(
-      fun() ->
-              [mnesia:lock({table, T}, write) || T <- Tabs], %% [1]
-              Exchanges0 = rabbit_db_exchange:list_exchanges(VHost),
-              Queues0 = rabbit_db_queue:get_all(VHost),
-              Exchanges = [GetUpdatedExchangeFun(X) || X <- Exchanges0],
-              Queues = [GetUpdatedQueueFun(Q) || Q <- Queues0],
-              {[update_exchange_policies(Map, fun rabbit_db_exchange:update_in_mnesia/2)
-                || Map <- Exchanges, is_map(Map)],
-               [update_queue_policies(Map, fun rabbit_db_queue:update_in_mnesia/2)
-                || Map <- Queues, is_map(Map)]}
-      end).
-
-update_policies_in_khepri(VHost, GetUpdatedExchangeFun, GetUpdatedQueueFun) ->
-    Exchanges0 = rabbit_db_exchange:list_exchanges(VHost),
-    Queues0 = rabbit_db_queue:get_all(VHost),
-    Exchanges = [GetUpdatedExchangeFun(X) || X <- Exchanges0],
-    Queues = [GetUpdatedQueueFun(Q) || Q <- Queues0],
-    rabbit_khepri:transaction(
-      fun() ->
-              {[update_exchange_policies(Map, fun rabbit_db_exchange:update_in_khepri/2)
-                || Map <- Exchanges, is_map(Map)],
-               [update_queue_policies(Map, fun rabbit_db_queue:update_in_khepri/2)
-                || Map <- Queues, is_map(Map)]}
-      end, rw).
-
-update_exchange_policies(#{exchange := X = #exchange{name = XName},
-                           update_function := UpdateFun}, StoreFun) ->
-    NewExchange = StoreFun(XName, UpdateFun),
-    case NewExchange of
-        #exchange{} = X1 -> {X, X1};
-        not_found        -> {X, X }
-    end.
-
-update_queue_policies(#{queue := Q0, update_function := UpdateFun}, StoreFun) ->
-    QName = amqqueue:get_name(Q0),
-    NewQueue = StoreFun(QName, UpdateFun),
-    case NewQueue of
-        Q1 when ?is_amqqueue(Q1) ->
-            {Q0, Q1};
-        not_found ->
-            {Q0, Q0}
     end.
 
 %% Feature flags

@@ -442,9 +442,9 @@ update_matched_objects(VHost, PolicyDef, ActingUser) ->
             {'EXIT', Exit} ->
                 exit(Exit);
             {Policies, OpPolicies} ->
-                rabbit_store:update_policies(VHost,
-                                             get_updated_exchange(Policies, OpPolicies),
-                                             get_updated_queue(Policies, OpPolicies))
+                rabbit_db_policy:update(VHost,
+                                        get_updated_exchange(Policies, OpPolicies),
+                                        get_updated_queue(Policies, OpPolicies))
         end,
     [catch maybe_notify_of_policy_change(XRes, PolicyDef, ActingUser) || XRes <- XUpdateResults],
     [catch maybe_notify_of_policy_change(QRes, PolicyDef, ActingUser) || QRes <- QUpdateResults].
