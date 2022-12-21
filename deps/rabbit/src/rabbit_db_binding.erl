@@ -151,13 +151,13 @@ get_all(VHost) ->
                                                 destination = VHostResource,
                                                 _           = '_'},
                              _       = '_'},
-              [B || #route{binding = B} <- rabbit_store:list_in_mnesia(rabbit_route, Match)]
+              [B || #route{binding = B} <- rabbit_db:list_in_mnesia(rabbit_route, Match)]
       end,
       fun() ->
-              Path = khepri_routes_path() ++ [VHost, rabbit_store:if_has_data_wildcard()],
+              Path = khepri_routes_path() ++ [VHost, rabbit_db:if_has_data_wildcard()],
               lists:foldl(fun(SetOfBindings, Acc) ->
                                   sets:to_list(SetOfBindings) ++ Acc
-                          end, [], rabbit_store:list_in_khepri(Path))
+                          end, [], rabbit_db:list_in_khepri(Path))
       end).
 
 -spec get_all_for_source(Src) -> [Binding] when
@@ -173,14 +173,14 @@ get_all_for_source(#resource{virtual_host = VHost, name = Name} = Resource) ->
     rabbit_khepri:try_mnesia_or_khepri(
       fun() ->
               Route = #route{binding = #binding{source = Resource, _ = '_'}},
-              [B || #route{binding = B} <- rabbit_store:list_in_mnesia(rabbit_route, Route)]
+              [B || #route{binding = B} <- rabbit_db:list_in_mnesia(rabbit_route, Route)]
       end,
       fun() ->
               Path = khepri_routes_path() ++ [VHost, Name,
-                                              rabbit_store:if_has_data_wildcard()],
+                                              rabbit_db:if_has_data_wildcard()],
               lists:foldl(fun(SetOfBindings, Acc) ->
                                   sets:to_list(SetOfBindings) ++ Acc
-                          end, [], rabbit_store:list_in_khepri(Path))
+                          end, [], rabbit_db:list_in_khepri(Path))
       end).
 
 -spec get_all_for_destination(Dst) -> [Binding] when
@@ -200,14 +200,14 @@ get_all_for_destination(#resource{virtual_host = VHost, name = Name,
               Route = rabbit_binding:reverse_route(#route{binding = #binding{destination = Resource,
                                                                              _ = '_'}}),
               [rabbit_binding:reverse_binding(B) ||
-                  #reverse_route{reverse_binding = B} <- rabbit_store:list_in_mnesia(rabbit_reverse_route, Route)]
+                  #reverse_route{reverse_binding = B} <- rabbit_db:list_in_mnesia(rabbit_reverse_route, Route)]
       end,
       fun() ->
               Path = khepri_routes_path() ++ [VHost, ?KHEPRI_WILDCARD_STAR, Kind, Name,
-                                              rabbit_store:if_has_data_wildcard()],
+                                              rabbit_db:if_has_data_wildcard()],
               lists:foldl(fun(SetOfBindings, Acc) ->
                                   sets:to_list(SetOfBindings) ++ Acc
-                          end, [], rabbit_store:list_in_khepri(Path))
+                          end, [], rabbit_db:list_in_khepri(Path))
       end).
 
 -spec get_all(Src, Dst) -> [Binding] when
@@ -227,7 +227,7 @@ get_all(SrcName, DstName) ->
               Route = #route{binding = #binding{source      = SrcName,
                                                 destination = DstName,
                                                 _           = '_'}},
-              [B || #route{binding = B} <- rabbit_store:list_in_mnesia(rabbit_route, Route)]
+              [B || #route{binding = B} <- rabbit_db:list_in_mnesia(rabbit_route, Route)]
       end,
       fun() ->
               Values = get_all_in_khepri(SrcName, DstName),
@@ -257,7 +257,7 @@ get_all_explicit() ->
       fun() ->
               Condition = #if_not{condition = #if_name_matches{regex = "^$"}},
               Path = khepri_routes_path() ++ [?KHEPRI_WILDCARD_STAR, Condition,
-                                              rabbit_store:if_has_data_wildcard()],
+                                              rabbit_db:if_has_data_wildcard()],
               {ok, Data} = rabbit_khepri:match(Path),
               lists:foldl(fun(SetOfBindings, Acc) ->
                                   sets:to_list(SetOfBindings) ++ Acc
@@ -285,7 +285,7 @@ fold(Fun, Acc) ->
       end,
       fun() ->
               Path = khepri_routes_path() ++ [?KHEPRI_WILDCARD_STAR,
-                                              rabbit_store:if_has_data_wildcard()],
+                                              rabbit_db:if_has_data_wildcard()],
               {ok, Res} = rabbit_khepri:fold(
                             Path,
                             fun(_, #{data := SetOfBindings}, Acc0) ->
@@ -408,7 +408,7 @@ has_for_source_in_mnesia(SrcName) ->
         contains(rabbit_semi_durable_route, Match).
 
 has_for_source_in_khepri(#resource{virtual_host = VHost, name = Name}) ->
-    Path = khepri_routes_path() ++ [VHost, Name, rabbit_store:if_has_data_wildcard()],
+    Path = khepri_routes_path() ++ [VHost, Name, rabbit_db:if_has_data_wildcard()],
     case khepri_tx:get_many(Path) of
         {ok, Map} ->
             maps:size(Map) > 0;
@@ -418,7 +418,7 @@ has_for_source_in_khepri(#resource{virtual_host = VHost, name = Name}) ->
 
 match_source_and_destination_in_khepri_tx(#resource{virtual_host = VHost, name = Name},
                                        #resource{kind = Kind, name = DstName}) ->
-    Path = khepri_routes_path() ++ [VHost, Name, Kind, DstName, rabbit_store:if_has_data_wildcard()],
+    Path = khepri_routes_path() ++ [VHost, Name, Kind, DstName, rabbit_db:if_has_data_wildcard()],
     case khepri_tx:get_many(Path) of
         {ok, Map} -> maps:values(Map);
         _         -> []
@@ -511,7 +511,7 @@ lookup_resource_in_khepri_tx(#resource{kind = exchange} = Name) ->
     rabbit_db_exchange:get_in_khepri_tx(Name).
 
 match_source_in_khepri(#resource{virtual_host = VHost, name = Name}) ->
-    Path = khepri_routes_path() ++ [VHost, Name, rabbit_store:if_has_data_wildcard()],
+    Path = khepri_routes_path() ++ [VHost, Name, rabbit_db:if_has_data_wildcard()],
     {ok, Map} = rabbit_khepri:match(Path),
     Map.
 
@@ -521,7 +521,7 @@ match_destination_in_khepri(#resource{virtual_host = VHost, kind = Kind, name = 
     Map.
 
 match_source_and_key_in_khepri(Src, ['_']) ->
-    Path = khepri_routing_path(Src, rabbit_store:if_has_data_wildcard()),
+    Path = khepri_routing_path(Src, rabbit_db:if_has_data_wildcard()),
     case rabbit_khepri:match(Path) of
         {ok, Map} ->
             maps:fold(fun(_, Dsts, Acc) ->
@@ -647,8 +647,8 @@ populate_index_route_table_in_mnesia() ->
 get_all_in_khepri(#resource{virtual_host = VHost, name = Name},
                   #resource{kind = Kind, name = DstName}) ->
     Path = khepri_routes_path() ++ [VHost, Name, Kind, DstName,
-                                    rabbit_store:if_has_data_wildcard()],
-    rabbit_store:list_in_khepri(Path).
+                                    rabbit_db:if_has_data_wildcard()],
+    rabbit_db:list_in_khepri(Path).
 
 delete_in_mnesia(Binding, ChecksFun) ->
     binding_action_in_mnesia(
@@ -764,7 +764,7 @@ delete_for_source_in_mnesia(SrcName, ShouldIndexTable) ->
 
 delete_for_source_in_khepri(#resource{virtual_host = VHost, name = Name}) ->
     Path = khepri_routes_path() ++ [VHost, Name],
-    {ok, Bindings} = khepri_tx:get_many(Path ++ [rabbit_store:if_has_data_wildcard()]),
+    {ok, Bindings} = khepri_tx:get_many(Path ++ [rabbit_db:if_has_data_wildcard()]),
     ok = khepri_tx:delete(Path),
     maps:fold(fun(_, Set, Acc) ->
                       sets:to_list(Set) ++ Acc

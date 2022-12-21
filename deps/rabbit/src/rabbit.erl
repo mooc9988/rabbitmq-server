@@ -64,13 +64,13 @@
                     {enables,     external_infrastructure}]}).
 
 -rabbit_boot_step({database,
-                   [{mfa,         {rabbit_store, init, []}},
+                   [{mfa,         {rabbit_db, init, []}},
                     {requires,    file_handle_cache},
                     {enables,     external_infrastructure}]}).
 
 -rabbit_boot_step({database_sync,
                    [{description, "database sync"},
-                    {mfa,         {rabbit_store, sync, []}},
+                    {mfa,         {rabbit_db, sync, []}},
                     {requires,    database},
                     {enables,     external_infrastructure}]}).
 

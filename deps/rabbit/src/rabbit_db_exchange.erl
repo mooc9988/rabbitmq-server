@@ -65,10 +65,10 @@
 get_all() ->
     rabbit_khepri:try_mnesia_or_khepri(
       fun() ->
-              rabbit_store:list_in_mnesia(rabbit_exchange, #exchange{_ = '_'})
+              rabbit_db:list_in_mnesia(rabbit_exchange, #exchange{_ = '_'})
       end,
       fun() ->
-              rabbit_store:list_in_khepri(khepri_exchanges_path() ++ [rabbit_store:if_has_data_wildcard()])
+              rabbit_db:list_in_khepri(khepri_exchanges_path() ++ [rabbit_db:if_has_data_wildcard()])
       end).
 
 -spec get_all(VHostName) -> [Exchange] when
@@ -100,10 +100,10 @@ get_all(VHost) ->
 get_all_durable() ->
     rabbit_khepri:try_mnesia_or_khepri(
       fun() ->
-              rabbit_store:list_in_mnesia(rabbit_durable_exchange, #exchange{_ = '_'})
+              rabbit_db:list_in_mnesia(rabbit_durable_exchange, #exchange{_ = '_'})
       end,
       fun() ->
-              rabbit_store:list_in_khepri(khepri_exchanges_path() ++ [rabbit_store:if_has_data_wildcard()])
+              rabbit_db:list_in_khepri(khepri_exchanges_path() ++ [rabbit_db:if_has_data_wildcard()])
       end).
 
 %% -------------------------------------------------------------------
@@ -124,7 +124,7 @@ list() ->
               mnesia:dirty_all_keys(rabbit_exchange)
       end,
       fun() ->
-              case rabbit_khepri:match(khepri_exchanges_path() ++ [rabbit_store:if_has_data_wildcard()]) of
+              case rabbit_khepri:match(khepri_exchanges_path() ++ [rabbit_db:if_has_data_wildcard()]) of
                   {ok, Map} ->
                       maps:fold(fun(_K, X, Acc) -> [X#exchange.name | Acc] end, [], Map);
                   _ ->
@@ -223,7 +223,7 @@ update(#resource{virtual_host = VHost, name = Name} = XName, Fun) ->
       end,
       fun() ->
               Path = khepri_exchange_path(XName),
-              rabbit_store:retry(
+              rabbit_db:retry(
                 fun () ->
                         case rabbit_khepri:adv_get(Path) of
                             {ok, #{data := X, payload_version := Vsn}} ->
@@ -346,7 +346,7 @@ next_serial(#exchange{name = #resource{name = Name, virtual_host = VHost} = XNam
       fun() ->
               %% Just storing the serial number is enough, no need to keep #exchange_serial{}
               Path = khepri_exchange_serial_path(XName),
-              rabbit_store:retry(
+              rabbit_db:retry(
                 fun() ->
                         case rabbit_khepri:adv_get(Path) of
                             {ok, #{data := Serial,
@@ -488,7 +488,7 @@ match(Pattern0) ->
       fun() ->
               %% TODO error handling?
               Pattern = #if_data_matches{pattern = Pattern0},
-              rabbit_store:list_in_khepri(khepri_exchanges_path() ++ [?KHEPRI_WILDCARD_STAR, Pattern])
+              rabbit_db:list_in_khepri(khepri_exchanges_path() ++ [?KHEPRI_WILDCARD_STAR, Pattern])
       end).
 
 %% -------------------------------------------------------------------
@@ -593,10 +593,10 @@ get_in_khepri_tx(Name) ->
 
 list_exchanges_in_mnesia(VHost) ->
     Match = #exchange{name = rabbit_misc:r(VHost, exchange), _ = '_'},
-    rabbit_store:list_in_mnesia(rabbit_exchange, Match).
+    rabbit_db:list_in_mnesia(rabbit_exchange, Match).
 
 list_exchanges_in_khepri(VHost) ->
-    rabbit_store:list_in_khepri(khepri_exchanges_path() ++ [VHost, rabbit_store:if_has_data_wildcard()]).
+    rabbit_db:list_in_khepri(khepri_exchanges_path() ++ [VHost, rabbit_db:if_has_data_wildcard()]).
 
 peek_serial_in_mnesia(XName, LockType) ->
     case mnesia:read(rabbit_exchange_serial, XName, LockType) of
@@ -766,7 +766,7 @@ recover_in_mnesia(VHost) ->
 
 recover_in_khepri(VHost) ->
     %% Transient exchanges are deprecated in Khepri, all exchanges are recovered
-    Exchanges0 = rabbit_store:list_in_khepri(khepri_exchanges_path() ++ [VHost, rabbit_store:if_has_data_wildcard()],
+    Exchanges0 = rabbit_db:list_in_khepri(khepri_exchanges_path() ++ [VHost, rabbit_db:if_has_data_wildcard()],
                                 #{timeout => infinity}),
     Exchanges = [rabbit_exchange_decorator:set(X) || X <- Exchanges0],
 

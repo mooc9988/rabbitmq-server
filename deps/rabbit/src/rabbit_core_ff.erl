@@ -149,7 +149,7 @@
       Args :: rabbit_feature_flags:enable_callback_args(),
       Ret :: rabbit_feature_flags:enable_callback_ret().
 direct_exchange_routing_v2_enable(#{feature_name := FeatureName}) ->
-    case rabbit_store:is_migration_done(raft_based_metadata_store_phase1) of
+    case rabbit_db:is_migration_done(raft_based_metadata_store_phase1) of
         true ->
             %% The routing shortcut should be disabled after enabling Khepri
             ok;
@@ -316,7 +316,7 @@ mds_phase1_migration_post_enable(#{feature_name := FeatureName}) ->
     %% data from previous migrations when a node joins an existing cluster.
     %% If the migration has never been completed, then it's fair to remove
     %% the existing data in Khepri.
-    rabbit_store:set_migration_flag(FeatureName).
+    rabbit_db:set_migration_flag(FeatureName).
 
 mds_migration_enable(FeatureName, TablesAndOwners) ->
     case ensure_khepri_cluster_matches_mnesia(FeatureName) of
@@ -502,7 +502,7 @@ migrate_tables_to_khepri_run(FeatureName, TablesAndOwners) ->
        "Feature flag `~s`:   clear data from any aborted migration attempts "
        "(if any)",
        [FeatureName]),
-    case rabbit_store:is_migration_done(FeatureName) of
+    case rabbit_db:is_migration_done(FeatureName) of
         %% This flag is necessary to skip clearing
         %% data from previous migrations when a node joins an existing cluster.
         %% If the migration has never been completed, then it's fair to remove

@@ -176,7 +176,7 @@ add_topic_trie_binding_in_khepri(XName, RoutingKey, Destination, Args) ->
     Path = khepri_exchange_type_topic_path(XName) ++ split_topic_key_binary(RoutingKey),
     {Path0, [Last]} = lists:split(length(Path) - 1, Path),
     Binding = #{destination => Destination, arguments => Args},
-    rabbit_store:retry(
+    rabbit_db:retry(
       fun() ->
               case rabbit_khepri:adv_get(Path) of
                   {ok, #{data := Set0, payload_version := Vsn}} ->
@@ -202,7 +202,7 @@ add_topic_trie_binding_tx(XName, RoutingKey, Destination, Args) ->
     ok = khepri_tx:put(Path, Set).
 
 route_delivery_for_exchange_type_topic_in_khepri(XName, RoutingKey) ->
-    Root = khepri_exchange_type_topic_path(XName) ++ [rabbit_store:if_has_data_wildcard()],
+    Root = khepri_exchange_type_topic_path(XName) ++ [rabbit_db:if_has_data_wildcard()],
     case rabbit_khepri:fold(
            Root,
            fun(Path0, #{data := Set}, Acc) ->

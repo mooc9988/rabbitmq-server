@@ -5,12 +5,9 @@
 %% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
--module(rabbit_store).
+-module(rabbit_db).
 
 -include_lib("khepri/include/khepri.hrl").
--include_lib("rabbit_common/include/rabbit.hrl").
--include_lib("rabbit_common/include/rabbit_framing.hrl").
--include("amqqueue.hrl").
 
 -export([init/0, sync/0]).
 -export([set_migration_flag/1, is_migration_done/1]).

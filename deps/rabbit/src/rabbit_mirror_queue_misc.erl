@@ -164,7 +164,7 @@ remove_from_queue_in_khepri(QueueName, Self, DeadGMPids) ->
       fun () ->
               %% Someone else could have deleted the queue before we
               %% get here. Or, gm group could've altered. see rabbitmq-server#914
-              case rabbit_store:lookup_queue_in_khepri_tx(QueueName) of
+              case rabbit_db:get_in_khepri_tx(QueueName) of
                   [] -> {error, not_found};
                   [Q0] when ?is_amqqueue(Q0) ->
                       QPid = amqqueue:get_pid(Q0),

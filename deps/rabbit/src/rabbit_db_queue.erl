@@ -53,7 +53,7 @@
 %% HA queues are removed it can be deleted.
 -export([internal_delete/3]).
 
-%% Used by other rabbit_db_* modules and rabbit_store
+%% Used by other rabbit_db_* modules
 -export([
          update_in_mnesia/2,
          update_in_khepri/2,
@@ -82,12 +82,12 @@ get_all() ->
     rabbit_khepri:try_mnesia_or_khepri(
       fun() -> list_with_possible_retry_in_mnesia(
                  fun() ->
-                         rabbit_store:list_in_mnesia(rabbit_queue, amqqueue:pattern_match_all())
+                         rabbit_db:list_in_mnesia(rabbit_queue, amqqueue:pattern_match_all())
                  end)
       end,
       fun() -> list_with_possible_retry_in_khepri(
                  fun() ->
-                         rabbit_store:list_in_khepri(khepri_queues_path() ++ [rabbit_store:if_has_data_wildcard()])
+                         rabbit_db:list_in_khepri(khepri_queues_path() ++ [rabbit_db:if_has_data_wildcard()])
                  end)
       end).
 
@@ -127,12 +127,12 @@ get_all_durable() ->
     rabbit_khepri:try_mnesia_or_khepri(
       fun() -> list_with_possible_retry_in_mnesia(
                  fun() ->
-                         rabbit_store:list_in_mnesia(rabbit_durable_queue, amqqueue:pattern_match_all())
+                         rabbit_db:list_in_mnesia(rabbit_durable_queue, amqqueue:pattern_match_all())
                  end)
       end,
       fun() -> list_with_possible_retry_in_khepri(
                  fun() ->
-                         rabbit_store:list_in_khepri(khepri_queues_path() ++ [rabbit_store:if_has_data_wildcard()])
+                         rabbit_db:list_in_khepri(khepri_queues_path() ++ [rabbit_db:if_has_data_wildcard()])
                  end)
       end).
 
@@ -151,12 +151,12 @@ get_all_durable(VHost) ->
       fun() -> list_with_possible_retry_in_mnesia(
                  fun() ->
                          Pattern = amqqueue:pattern_match_on_name(rabbit_misc:r(VHost, queue)),
-                         rabbit_store:list_in_mnesia(rabbit_durable_queue, Pattern)
+                         rabbit_db:list_in_mnesia(rabbit_durable_queue, Pattern)
                  end)
       end,
       fun() -> list_with_possible_retry_in_khepri(
                  fun() ->
-                         rabbit_store:list_in_khepri(khepri_queues_path() ++ [VHost, rabbit_store:if_has_data_wildcard()])
+                         rabbit_db:list_in_khepri(khepri_queues_path() ++ [VHost, rabbit_db:if_has_data_wildcard()])
                  end)
       end).
 
@@ -164,10 +164,10 @@ get_all_durable_by_type(Type) ->
     Pattern = amqqueue:pattern_match_on_type(Type),
     rabbit_khepri:try_mnesia_or_khepri(
       fun() ->
-              rabbit_store:list_in_mnesia(rabbit_durable_queue, Pattern)
+              rabbit_db:list_in_mnesia(rabbit_durable_queue, Pattern)
       end,
       fun() ->
-              rabbit_store:list_in_khepri(khepri_queues_path() ++ [rabbit_store:if_has_data([?KHEPRI_WILDCARD_STAR_STAR, #if_data_matches{pattern = amqqueue:pattern_match_all()}])])
+              rabbit_db:list_in_khepri(khepri_queues_path() ++ [rabbit_db:if_has_data([?KHEPRI_WILDCARD_STAR_STAR, #if_data_matches{pattern = amqqueue:pattern_match_all()}])])
       end).
 
 list() ->
@@ -176,7 +176,7 @@ list() ->
               mnesia:dirty_all_keys(rabbit_queue)
       end,
       fun() ->
-              case rabbit_khepri:match(khepri_queues_path() ++ [rabbit_store:if_has_data_wildcard()]) of
+              case rabbit_khepri:match(khepri_queues_path() ++ [rabbit_db:if_has_data_wildcard()]) of
                   {ok, Map} ->
                       maps:fold(fun(_K, Q, Acc) -> [amqqueue:get_name(Q) | Acc] end, [], Map);
                   _ ->
@@ -271,7 +271,7 @@ update(#resource{virtual_host = VHost, name = Name} = QName, Fun) ->
       end,
       fun() ->
               Path = khepri_queue_path(QName),
-              rabbit_store:retry(
+              rabbit_db:retry(
                 fun() ->
                         case rabbit_khepri:adv_get(Path) of
                             {ok, #{data := Q, payload_version := Vsn}} ->
@@ -312,10 +312,10 @@ get_all_by_type(Type) ->
     Pattern = amqqueue:pattern_match_on_type(Type),
     rabbit_khepri:try_mnesia_or_khepri(
       fun() ->
-              rabbit_store:list_in_mnesia(rabbit_queue, Pattern)
+              rabbit_db:list_in_mnesia(rabbit_queue, Pattern)
       end,
       fun() ->
-              rabbit_store:list_in_khepri(khepri_queues_path() ++ [rabbit_store:if_has_data([?KHEPRI_WILDCARD_STAR_STAR, #if_data_matches{pattern = Pattern}])])
+              rabbit_db:list_in_khepri(khepri_queues_path() ++ [rabbit_db:if_has_data([?KHEPRI_WILDCARD_STAR_STAR, #if_data_matches{pattern = Pattern}])])
       end).
 
 create_or_get(DurableQ, Q) ->
@@ -506,13 +506,13 @@ get_all_in_mnesia(VHost) ->
     list_with_possible_retry_in_mnesia(
       fun() ->
               Pattern = amqqueue:pattern_match_on_name(rabbit_misc:r(VHost, queue)),
-              rabbit_store:list_in_mnesia(rabbit_queue, Pattern)
+              rabbit_db:list_in_mnesia(rabbit_queue, Pattern)
       end).
 
 get_all_in_khepri(VHost) ->
     list_with_possible_retry_in_khepri(
       fun() ->
-              rabbit_store:list_in_khepri(khepri_queues_path() ++ [VHost, rabbit_store:if_has_data_wildcard()])
+              rabbit_db:list_in_khepri(khepri_queues_path() ++ [VHost, rabbit_db:if_has_data_wildcard()])
       end).
 
 not_found_or_absent_queue_dirty_in_mnesia(Name) ->
@@ -657,7 +657,7 @@ update_decorators_in_khepri(#resource{virtual_host = VHost, name = Name} = QName
     %% Decorators have just been calculated on `rabbit_queue_decorator:maybe_recover/1`, thus
     %% we can update them here directly.
     Path = khepri_queue_path(QName),
-    rabbit_store:retry(
+    rabbit_db:retry(
       fun() ->
               case rabbit_khepri:adv_get(Path) of
                   {ok, #{data := Q0, payload_version := Vsn}} ->

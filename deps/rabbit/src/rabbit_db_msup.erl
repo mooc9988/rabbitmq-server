@@ -173,7 +173,7 @@ create_or_update_in_khepri(Group, Overall, Delegate, ChildSpec, {SimpleId, _} = 
     S = #mirrored_sup_childspec{key           = {Group, Id},
                                 mirroring_pid = Overall,
                                 childspec     = ChildSpec},
-    rabbit_store:retry(
+    rabbit_db:retry(
       fun() ->
               case rabbit_khepri:adv_get(Path) of
                   {ok, #{data := #mirrored_sup_childspec{mirroring_pid = Pid},
