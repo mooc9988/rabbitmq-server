@@ -142,7 +142,6 @@ process_request(?PUBACK,
         {QMsgId, U} ->
             case rabbit_queue_type:settle(QName, complete, ?CONSUMER_TAG, [QMsgId], QStates0) of
                 {ok, QStates, Actions} ->
-                    %%TODO rabbit_channel:incr_queue_stats/3
                     message_acknowledged(QName, State),
                     {ok, handle_queue_actions(Actions, State#state{unacked_server_pubs = U,
                                                                    queue_states = QStates})};
@@ -349,14 +348,14 @@ process_connect(#mqtt_packet{
                               PacketConnect, State0) of
         {ok, SessionPresent0, State1} ->
             {?CONNACK_ACCEPT, SessionPresent0, State1};
-        {error, ReturnCode0, State1} ->
-            {ReturnCode0, false, State1}
+        {error, ConnectionRefusedReturnCode, State1} ->
+            {ConnectionRefusedReturnCode, false, State1}
     end,
-    ResponsePacket = #mqtt_packet{fixed    = #mqtt_packet_fixed{type = ?CONNACK},
-                                  variable = #mqtt_packet_connack{
-                                                session_present = SessionPresent,
-                                                return_code = ReturnCode}},
-    SendFun(ResponsePacket, State),
+    Response = #mqtt_packet{fixed = #mqtt_packet_fixed{type = ?CONNACK},
+                            variable = #mqtt_packet_connack{
+                                          session_present = SessionPresent,
+                                          return_code = ReturnCode}},
+    SendFun(Response, State),
     return_connack(ReturnCode, State).
 
 check_protocol_version(#mqtt_packet_connect{proto_ver = ProtoVersion}) ->
@@ -368,7 +367,7 @@ check_protocol_version(#mqtt_packet_connect{proto_ver = ProtoVersion}) ->
     end.
 
 check_client_id(#mqtt_packet_connect{clean_sess = false,
-                                     client_id = []}) ->
+                                     client_id = <<>>}) ->
     {error, ?CONNACK_ID_REJECTED};
 check_client_id(_) ->
     ok.
@@ -401,12 +400,10 @@ login({UserBin, PassBin,
       State0) ->
     ClientId = ensure_client_id(ClientId0),
     case process_login(UserBin, PassBin, ClientId, State0) of
-        already_connected ->
-            {ok, already_connected};
         {ok, State} ->
             {ok, Packet, State#state{clean_sess = CleanSess,
                                      client_id = ClientId}};
-        {error, _Reason, _State} = Err ->
+        {error, _ConnectionRefusedReturnCode, _State} = Err ->
             Err
     end.
 
@@ -419,8 +416,6 @@ ensure_client_id(ClientId)
   when is_binary(ClientId) ->
     ClientId.
 
-register_client(already_connected, _State) ->
-    ok;
 register_client(Packet = #mqtt_packet_connect{proto_ver = ProtoVersion},
                 State = #state{client_id = ClientId,
                                socket = Socket,
@@ -462,8 +457,6 @@ register_client(Packet = #mqtt_packet_connect{proto_ver = ProtoVersion},
             {ok, NewProcState(undefined)}
     end.
 
-notify_connection_created(already_connected) ->
-    ok;
 notify_connection_created(#mqtt_packet_connect{}) ->
     rabbit_networking:register_non_amqp_connection(self()),
     self() ! connection_created,
@@ -674,17 +667,18 @@ make_will_msg(#mqtt_packet_connect{will_retain = Retain,
               dup     = false,
               payload = Msg}.
 
-process_login(_UserBin, _PassBin, _ClientId,
+process_login(_UserBin, _PassBin, ClientId,
               #state{peer_addr  = Addr,
                      auth_state = #auth_state{username = Username,
                                               user = User,
                                               vhost = VHost
-                                             }})
+                                             }} = State)
   when Username =/= undefined, User =/= undefined, VHost =/= underfined ->
     rabbit_core_metrics:auth_attempt_failed(list_to_binary(inet:ntoa(Addr)), Username, mqtt),
-    rabbit_log_connection:warning("MQTT detected duplicate connect/login attempt for user ~ts, vhost ~ts",
-                                  [Username, VHost]),
-    already_connected;
+    rabbit_log_connection:error(
+      "MQTT detected duplicate connect attempt for client ID '~ts', user '~ts', vhost '~ts'",
+      [ClientId, Username, VHost]),
+    {error, ?CONNACK_ID_REJECTED, State};
 process_login(UserBin, PassBin, ClientId,
               #state{socket = Sock,
                      ssl_login_name = SslLoginName,
@@ -713,7 +707,7 @@ process_login(UserBin, PassBin, ClientId,
         {ok, _Output, State} ->
             rabbit_core_metrics:auth_attempt_succeeded(RemoteIpAddressBin, UsernameBin, mqtt),
             {ok, State};
-        {error, _Reason, _State} = Err ->
+        {error, _ConnectionRefusedReturnCode, _State} = Err ->
             rabbit_core_metrics:auth_attempt_failed(RemoteIpAddressBin, UsernameBin, mqtt),
             Err
     end.
@@ -1230,8 +1224,6 @@ deliver_to_queues(Delivery,
                   RoutedToQNames,
                   State0 = #state{queue_states = QStates0,
                                   proto_ver = ProtoVer}) ->
-    %% TODO only lookup fields that are needed using ets:select / match?
-    %% TODO Use ETS continuations to be more space efficient
     Qs0 = rabbit_amqqueue:lookup(RoutedToQNames),
     Qs = rabbit_amqqueue:prepend_extra_bcc(Qs0),
     case rabbit_queue_type:deliver(Qs, Delivery, QStates0) of
@@ -1626,14 +1618,8 @@ increment_packet_id(Id) ->
 
 maybe_auto_ack(_AckRequired = true, ?QOS_0, QName, QMsgId,
                State = #state{queue_states = QStates0}) ->
-    case rabbit_queue_type:settle(QName, complete, ?CONSUMER_TAG, [QMsgId], QStates0) of
-        {ok, QStates, Actions} ->
-            %%TODO rabbit_channel:incr_queue_stats/3
-            handle_queue_actions(Actions, State#state{queue_states = QStates});
-        {protocol_error, _ErrorType, _Reason, _ReasonArgs} = Err ->
-            %%TODO handle error
-            throw(Err)
-    end;
+    {ok, QStates, Actions} = rabbit_queue_type:settle(QName, complete, ?CONSUMER_TAG, [QMsgId], QStates0),
+    handle_queue_actions(Actions, State#state{queue_states = QStates});
 maybe_auto_ack(_, _, _, _, State) ->
     State.
 

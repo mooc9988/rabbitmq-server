@@ -80,6 +80,7 @@ tests() ->
      ,large_message_mqtt_to_mqtt
      ,large_message_amqp_to_mqtt
      ,rabbit_mqtt_qos0_queue_overflow
+     ,non_clean_sess_empty_client_id
     ].
 
 suite() ->
@@ -765,7 +766,7 @@ large_message_mqtt_to_mqtt(Config) ->
     C = connect(ClientId, Config),
     {ok, _, [1]} = emqtt:subscribe(C, {Topic, qos1}),
 
-    Payload0 = binary:copy(<<"x">>, 1_000_000),
+    Payload0 = binary:copy(<<"x">>, 8_000_000),
     Payload = <<Payload0/binary, "y">>,
     {ok, _} = emqtt:publish(C, Topic, Payload, qos1),
     ok = expect_publishes(Topic, [Payload]),
@@ -778,7 +779,7 @@ large_message_amqp_to_mqtt(Config) ->
     {ok, _, [1]} = emqtt:subscribe(C, {Topic, qos1}),
 
     Ch = rabbit_ct_client_helpers:open_channel(Config, 0),
-    Payload0 = binary:copy(<<"x">>, 1_000_000),
+    Payload0 = binary:copy(<<"x">>, 8_000_000),
     Payload = <<Payload0/binary, "y">>,
     amqp_channel:call(Ch,
                       #'basic.publish'{exchange = <<"amq.topic">>,
@@ -937,6 +938,23 @@ cli_list_queues(Config) ->
                 ),
 
     ok = emqtt:disconnect(C).
+
+%% "If the Client supplies a zero-byte ClientId with CleanSession set to 0,
+%% the Server MUST respond to the CONNECT Packet with a CONNACK return code 0x02
+%% (Identifier rejected) and then close the Network Connection" [MQTT-3.1.3-8].
+non_clean_sess_empty_client_id(Config) ->
+    {ok, C} = emqtt:start_link([{clientid, <<>>},
+                                {clean_start, false},
+                                {proto_ver, v4},
+                                {host, "localhost"},
+                                {port, get_node_config(Config, 0, tcp_port_mqtt)}
+                               ]),
+    process_flag(trap_exit, true),
+    ?assertMatch({error, {client_identifier_not_valid, _}},
+                 emqtt:connect(C)),
+    receive {'EXIT', C, _} -> ok
+    after 500 -> ct:fail("server did not close connection")
+    end.
 
 %% -------------------------------------------------------------------
 %% Internal helpers
