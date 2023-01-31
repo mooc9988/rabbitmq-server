@@ -72,6 +72,7 @@ boot_state_idx(stopping)     -> 4.
 is_valid(BootState) ->
     is_integer(boot_state_idx(BootState)).
 
+% Tianjie: 利用进程字典储存/获取状态
 has_reached(TargetBootState) ->
     has_reached(?MODULE:get(), TargetBootState).
 

@@ -33,7 +33,7 @@ define PROJECT_ENV
 	    {fhc_write_buffering, true},
 	    {fhc_read_buffering, false},
 	    {queue_index_max_journal_entries, 32768},
-	    {queue_index_embed_msgs_below, 4096},
+	    {queue_index_embed_msgs_below, 0},
 	    {default_user, <<"guest">>},
 	    {default_pass, <<"guest">>},
 	    {default_user_tags, [administrator]},

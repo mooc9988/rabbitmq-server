@@ -1205,6 +1205,7 @@ write_message(MsgId, Msg,
                                  sum_valid_data      = SumValid,
                                  sum_file_size       = SumFileSize,
                                  file_summary_ets    = FileSummaryEts }) ->
+    io:format("this is msg: id ~p, will write to ~p, content ~p. ~n", [MsgId, CurFile, Msg]),
     {ok, CurOffset} = file_handle_cache:current_virtual_offset(CurHdl),
     {ok, TotalSize} = rabbit_msg_file:append(CurHdl, MsgId, Msg),
     ok = index_insert(
@@ -1233,6 +1234,7 @@ read_message1(From, #msg_location { msg_id = MsgId, file = File,
                                  current_file_handle = CurHdl,
                                  file_summary_ets    = FileSummaryEts,
                                  cur_file_cache_ets  = CurFileCacheEts }) ->
+    io:format("now MsgId is ~p, Offset is ~p, File is ~p, CurFile is ~p, FileSummaryEts is ~p ~n", [MsgId, Offset, File, CurFile, FileSummaryEts]),
     case File =:= CurFile of
         true  -> {Msg, State1} =
                      %% can return [] if msg in file existed on startup

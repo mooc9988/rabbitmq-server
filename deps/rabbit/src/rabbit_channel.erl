@@ -2572,6 +2572,8 @@ handle_method(#'queue.declare'{queue       = QueueNameBin,
             %% enforce the limit for newly declared queues only
             check_vhost_queue_limit(QueueName, VHostPath),
             DlxKey = <<"x-dead-letter-exchange">>,
+            % 死信队列的处理
+            % Args这个列表中是否包含key为DlxKey的tuple，如果有，则返回r(VHostPath, exchange, NameBin)
             case rabbit_misc:r_arg(VHostPath, exchange, Args, DlxKey) of
                undefined ->
                    ok;

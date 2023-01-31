@@ -45,6 +45,7 @@ init([]) ->
 find_for_vhost(VHost) ->
     find_for_vhost(VHost, node()).
 
+%% 实际上返回的是rabbit_amqqueue_sup_sup的pid
 -spec find_for_vhost(rabbit_types:vhost(), atom()) -> {ok, pid()} | {error, term()}.
 find_for_vhost(VHost, Node) ->
     {ok, VHostSup} = rabbit_vhost_sup_sup:get_vhost_sup(VHost, Node),

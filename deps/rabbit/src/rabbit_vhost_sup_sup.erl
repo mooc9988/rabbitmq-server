@@ -150,6 +150,7 @@ get_vhost_sup(VHost, Node) ->
             {error, RpcErr}
     end.
 
+%% 寻找rabbit_vhost_sup的pid
 -spec get_vhost_sup(rabbit_types:vhost()) -> {ok, pid()} | {error, vhost_error()}.
 get_vhost_sup(VHost) ->
     case rabbit_vhost:exists(VHost) of
